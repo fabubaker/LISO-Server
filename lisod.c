@@ -75,6 +75,13 @@ int main(int argc, char* argv[])
   serv_addr.sin_port = htons(listen_port);
   serv_addr.sin_addr.s_addr = INADDR_ANY;
 
+  /* Set sockopt so that ports can be resued */
+  int enable = -1;
+  if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) == -1) {
+    fprintf(stderr,"setsockopt error! Aborting...\n");
+    return EXIT_FAILURE;
+  }
+
   /* servers bind sockets to ports---notify the OS they accept connections */
   if (bind(listen_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)))
   {
