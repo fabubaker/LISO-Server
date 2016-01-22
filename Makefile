@@ -6,13 +6,18 @@
 # Author: Fadhil Abubaker.							    #
 #########################################################
 
-default: lisod
+CC = gcc
+CFLAGS = -Wall -Wextra -Werror -g -std=gnu99
 
-lisod:
-	@gcc lisod.c -g -o lisod -Wall -Werror -Wextra
+all: lisod
+
+lisod: lisod.c
+	$(CC) $(CFLAGS) lisod.c -o lisod
 
 echo_client:
-	@gcc echo_client.c -g -o echo_client -Wall -Werror -Wextra
+	$(CC) $(CFLAGS) echo_client.c -o echo_client
+
+.PHONY: all clean
 
 clean:
-	@rm lisod
+	rm -f *~ *.o lisod

@@ -1,0 +1,7 @@
+@file vulnerabilities.txt
+@author Fadhil Abubaker
+
+1. Maximum number of clients that can be handled at a time is
+restricted to FD_SETSIZE.
+
+2. The 'struct pool' is better off being on the heap as opposed to the stack to prevent stack overflows.
