@@ -6,3 +6,4 @@ lisod
 15-441-project-1.tar
 *.o
 handin.txt
+.gdbinit
