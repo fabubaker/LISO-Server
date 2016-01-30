@@ -24,6 +24,8 @@
 #include <sys/select.h>
 #include <unistd.h>
 
+#include "logger.h"
+
 #define BUF_SIZE 4096
 
 typedef struct pool {
@@ -38,6 +40,8 @@ typedef struct pool {
   char data[FD_SETSIZE][BUF_SIZE];   /* Array that contains echo strings */
 } pool;
 
+/** Global vars **/
+FILE* logfile;   /* Legitimate use of globals, I swear! */
 
 /** Prototypes **/
 
@@ -45,12 +49,13 @@ int close_socket(int sock);
 void init_pool(int listenfd, pool *p);
 void add_client(int client_fd, pool *p);
 void check_clients(pool *p);
+void cleanup(int sig);
 
 /** Definitions **/
 
 int main(int argc, char* argv[])
 {
-  if (argc != 2 && argc != 9) // argc = 9
+  if (argc != 4 && argc != 9) // argc = 9
   {
     fprintf(stderr, "%d \n", argc);
     fprintf(stderr, "usage: %s <HTTP port> <HTTPS port> <log file> ", argv[0]);
@@ -59,21 +64,34 @@ int main(int argc, char* argv[])
     return EXIT_FAILURE;
   }
 
-  /* Ignore SIGPIPES */
+  /* Ignore SIGPIPE */
   signal(SIGPIPE, SIG_IGN);
 
+  /* Handle SIGINT to cleanup after liso */
+  signal(SIGINT, cleanup);
+
   short listen_port = atoi(argv[1]);
+  logfile = log_open(argv[3]);
+  char log_buf[BUF_SIZE] = {0};
   int listen_fd, client_fd;    // file descriptors.
   socklen_t cli_size;
   struct sockaddr_in serv_addr, cli_addr;
   pool *pool = malloc(sizeof(struct pool));
+
+  if(pool == NULL)
+  {
+    log_error("Malloc error! Exiting!", logfile);
+    log_close(logfile);
+    return EXIT_FAILURE;
+  }
 
   fprintf(stdout, "----- Echo Server -----\n");
 
   /* all networked programs must create a socket */
   if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
   {
-    fprintf(stderr, "Failed creating socket.\n");
+    log_error("Failed creating socket.",logfile);
+    log_close(logfile);
     return EXIT_FAILURE;
   }
 
@@ -86,7 +104,8 @@ int main(int argc, char* argv[])
   if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
                  sizeof(int)) == -1)
   {
-    fprintf(stderr,"setsockopt error! Aborting...\n");
+    log_error("setsockopt error! Aborting...", logfile);
+    log_close(logfile);
     return EXIT_FAILURE;
   }
 
@@ -94,14 +113,16 @@ int main(int argc, char* argv[])
   if (bind(listen_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)))
   {
     close_socket(listen_fd);
-    fprintf(stderr, "Failed binding socket.\n");
+    log_error("Failed binding socket.", logfile);
+    log_close(logfile);
     return EXIT_FAILURE;
   }
 
   if (listen(listen_fd, 5))
   {
     close_socket(listen_fd);
-    fprintf(stderr, "Error listening on socket.\n");
+    log_error("Error listening on socket.", logfile);
+    log_close(logfile);
     return EXIT_FAILURE;
   }
 
@@ -119,8 +140,10 @@ int main(int argc, char* argv[])
                              NULL, NULL)) == -1)
     {
       close_socket(listen_fd);
-      fprintf(stderr, "Error: %s \n", strerror(errno));
-      fprintf(stderr, "Select() failed! Aborting...\n");
+      memset(log_buf, 0, BUF_SIZE);
+      sprintf(log_buf, "Select failed! Error: %s", strerror(errno));
+      log_error(log_buf,logfile);
+      log_close(logfile);
       return EXIT_FAILURE;
     }
 
@@ -132,10 +155,11 @@ int main(int argc, char* argv[])
                                 &cli_size)) == -1)
       {
         close(listen_fd);
-        fprintf(stderr, "Error accepting connection.\n");
+        log_error("Error accepting connection.", logfile);
+        log_close(logfile);
         return EXIT_FAILURE;
       }
-      fprintf(stderr,"We have a new client! \n");
+      log_error("We have a new client!", logfile);
       add_client(client_fd, pool);
     }
 
@@ -143,12 +167,12 @@ int main(int argc, char* argv[])
     check_clients(pool);
   }
 }
-
 int close_socket(int sock)
 {
   if (close(sock))
   {
-    fprintf(stderr, "Failed closing socket.\n");
+    log_error("Failed closing socket", logfile);
+    log_close(logfile);
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;
@@ -167,8 +191,6 @@ void init_pool(int listenfd, pool *p)
   memset(p->clientfd, -1, FD_SETSIZE*sizeof(int)); // No clients at the moment.
   memset(p->data, 0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
   memset(p->stored, -1, FD_SETSIZE*sizeof(int));
-  //  for(i = 0; i < FD_SETSIZE; i++)
-  //p->clientfd[i] = -1;
 
   /* Initailly, listenfd is the only member of the read set */
   p->maxfd = listenfd;
@@ -185,12 +207,8 @@ void init_pool(int listenfd, pool *p)
 void add_client(int client_fd, pool *p)
 {
   int i;
-  //  bool found = false;
 
   p->nready--;
-
-  // fprintf(stderr, "FD_SETSIZE = %d \n", FD_SETSIZE);
-  fprintf(stderr,"Clients before:: %d\n", p->maxi);
 
   for (i = 0; i < FD_SETSIZE; i++)  /* Find an available slot */
   {
@@ -209,11 +227,9 @@ void add_client(int client_fd, pool *p)
     }
   }
 
-  fprintf(stderr,"Clients after:: %d\n", p->maxi);
-
   if (i == FD_SETSIZE)   /* There are no empty slots */
   {
-    fprintf(stderr,"Too many clients! Closing client socket...\n");
+    log_error("Too many clients! Closing client socket...", logfile);
     close_socket(client_fd);
   }
 }
@@ -243,21 +259,17 @@ void check_clients(pool *p)
     {
       p->nready--;
 
-      // fprintf(stderr, "Reading data...\n");
       if ((n = recv(client_fd, buf, BUF_SIZE, 0)) >= 1)
       {
-        // fprintf(stderr,"RECEIVED: %s \n", buf);
-        // fprintf(stderr, "Sending data...\n");
         /* Check if ready for writing */
         if(FD_ISSET(client_fd, &p->writefds))
         {
-          // fprintf(stderr,"SENDING: %s \n", buf);
           if (send(client_fd, buf, n, 0) != n)
           {
             close_socket(client_fd);
-            fprintf(stderr, "Error sending to client. \n");
+            log_error("Error sending to client.", logfile);
           }
-          // fprintf(stderr, "Data sent!...\n");
+
           memset(buf,0,BUF_SIZE);
         }
         /* Not ready, save request. */
@@ -265,7 +277,7 @@ void check_clients(pool *p)
         {
           strncpy(p->data[i], buf, n);
           p->stored[i] = n;
-          fprintf(stderr, "Data stored. \n");
+          log_error("Data stored.", logfile);
           memset(buf,0,BUF_SIZE);
         }
       }
@@ -276,7 +288,7 @@ void check_clients(pool *p)
         FD_CLR(client_fd, &p->masterfds);
         p->clientfd[i] = -1;
         p->stored[i] = -1;
-        fprintf(stderr, "Client closed connection with EOF. \n");
+        log_error("Client closed connection with EOF.", logfile);
       }
 
       if (n == -1) /* Error with recv */
@@ -285,7 +297,7 @@ void check_clients(pool *p)
         FD_CLR(client_fd, &p->masterfds);
         p->clientfd[i] = -1;
         p->stored[i] = -1;
-        fprintf(stderr,"Error reading from client socket. \n");
+        log_error("Error reading from client socket.", logfile);
       }
     }
     /* If a descriptor has data to be sent, send it */
@@ -297,9 +309,20 @@ void check_clients(pool *p)
       if (send(client_fd, p->data[i], n, 0) != n)
       {
         close_socket(client_fd);
-        fprintf(stderr, "Error sending to client. \n");
+        log_error("Error sending to client.", logfile);
       }
-      // fprintf(stderr, "Data sent!...\n");
     }
   } // End of client loop.
+}
+
+void cleanup(int sig)
+{
+  int appease_compiler = sig;
+  appease_compiler += 2;
+
+  log_error("Received SIGINT. Goodbye, cruel world.", logfile);
+  log_close(logfile);
+
+  fprintf(stderr, "\nThank you for flying Liso. See ya!\n");
+  exit(1);
 }
