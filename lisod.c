@@ -26,7 +26,7 @@
 
 #define BUF_SIZE 4096
 
-typedef struct {
+typedef struct pool {
   int maxfd;         /* Largest descriptor in the master set */
   fd_set masterfds;  /* Set containing all active descriptors */
   fd_set readfds;    /* Subset of descriptors ready for reading */
@@ -34,7 +34,7 @@ typedef struct {
   int nready;        /* Number of ready descriptors from select */
   int maxi;          /* Max index of clientfd array             */
   int clientfd[FD_SETSIZE];   /* Array of active client descriptors */
-  int stored[FD_SETSIZE];   /* Array of bool/ints used for data storage indication */
+  int stored[FD_SETSIZE];/* Array of bools used for data storage indication */
   char data[FD_SETSIZE][BUF_SIZE];   /* Array that contains echo strings */
 } pool;
 
@@ -66,7 +66,7 @@ int main(int argc, char* argv[])
   int listen_fd, client_fd;    // file descriptors.
   socklen_t cli_size;
   struct sockaddr_in serv_addr, cli_addr;
-  pool pool;
+  pool *pool = malloc(sizeof(struct pool));
 
   fprintf(stdout, "----- Echo Server -----\n");
 
@@ -83,7 +83,9 @@ int main(int argc, char* argv[])
 
   /* Set sockopt so that ports can be resued */
   int enable = -1;
-  if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) == -1) {
+  if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
+                 sizeof(int)) == -1)
+  {
     fprintf(stderr,"setsockopt error! Aborting...\n");
     return EXIT_FAILURE;
   }
@@ -104,16 +106,17 @@ int main(int argc, char* argv[])
   }
 
   /* Initialize our pool of fds */
-  init_pool(listen_fd, &pool);
+  init_pool(listen_fd, pool);
 
   /* finally, loop waiting for input and then write it back */
   while (1)
   {
     /* Block until there are file descriptors ready */
-    pool.readfds = pool.masterfds;
-    pool.writefds = pool.masterfds;
+    pool->readfds = pool->masterfds;
+    pool->writefds = pool->masterfds;
     // fprintf(stderr, "Waiting for select...\n");
-    if((pool.nready = select(pool.maxfd+1, &pool.readfds, &pool.writefds, NULL, NULL)) == -1)
+    if((pool->nready = select(pool->maxfd+1, &pool->readfds, &pool->writefds,
+                             NULL, NULL)) == -1)
     {
       close_socket(listen_fd);
       fprintf(stderr, "Error: %s \n", strerror(errno));
@@ -122,7 +125,7 @@ int main(int argc, char* argv[])
     }
 
     /* If the listening descriptor is ready, add the new client to the pool  */
-    if (FD_ISSET(listen_fd, &pool.readfds))
+    if (FD_ISSET(listen_fd, &pool->readfds))
     {
       cli_size = sizeof(cli_addr);
       if ((client_fd = accept(listen_fd, (struct sockaddr *) &cli_addr,
@@ -133,11 +136,11 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
       }
       fprintf(stderr,"We have a new client! \n");
-      add_client(client_fd, &pool);
+      add_client(client_fd, pool);
     }
 
     /* Echo a text line from each ready descriptor */
-    check_clients(&pool);
+    check_clients(pool);
   }
 }
 
@@ -235,7 +238,7 @@ void check_clients(pool *p)
   {
     client_fd = p->clientfd[i];
 
-    /* If a descriptor is ready to be read, read then echo a text line from it */
+    /* If a descriptor is ready to be read, echo a text line from it */
     if ((client_fd > 0) && (FD_ISSET(client_fd, &p->readfds)))
     {
       p->nready--;
