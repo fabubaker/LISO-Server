@@ -23,6 +23,8 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <unistd.h>
+#include <netdb.h>
+
 
 #include "logger.h"
 
@@ -66,13 +68,19 @@ int main(int argc, char* argv[])
 
   /* Ignore SIGPIPE */
   signal(SIGPIPE, SIG_IGN);
-
   /* Handle SIGINT to cleanup after liso */
   signal(SIGINT, cleanup);
 
+  /* Parse cmdline args */
   short listen_port = atoi(argv[1]);
   logfile = log_open(argv[3]);
+  //  char* wwwfolder = argv[5];
+
+  /* Various buffers for read/write */
   char log_buf[BUF_SIZE] = {0};
+  char hostname[BUF_SIZE] = {0};
+  char port[BUF_SIZE] = {0};
+
   int listen_fd, client_fd;    // file descriptors.
   socklen_t cli_size;
   struct sockaddr_in serv_addr, cli_addr;
@@ -85,7 +93,7 @@ int main(int argc, char* argv[])
     return EXIT_FAILURE;
   }
 
-  fprintf(stdout, "----- Echo Server -----\n");
+  fprintf(stdout, "-----Welcome to Liso!-----\n");
 
   /* all networked programs must create a socket */
   if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
@@ -135,7 +143,7 @@ int main(int argc, char* argv[])
     /* Block until there are file descriptors ready */
     pool->readfds = pool->masterfds;
     pool->writefds = pool->masterfds;
-    // fprintf(stderr, "Waiting for select...\n");
+
     if((pool->nready = select(pool->maxfd+1, &pool->readfds, &pool->writefds,
                              NULL, NULL)) == -1)
     {
@@ -159,7 +167,13 @@ int main(int argc, char* argv[])
         log_close(logfile);
         return EXIT_FAILURE;
       }
-      log_error("We have a new client!", logfile);
+
+      getnameinfo((struct sockaddr *) &cli_addr, cli_size,
+                  hostname, BUF_SIZE, port, BUF_SIZE, 0);
+      memset(log_buf, 0, BUF_SIZE);
+      sprintf(log_buf,
+              "We have a new client: Say hi to %s:%s.", hostname, port);
+      log_error(log_buf, logfile);
       add_client(client_fd, pool);
     }
 
