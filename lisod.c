@@ -28,8 +28,6 @@
 
 #include "logger.h"
 
-#define BUF_SIZE 4096
-
 typedef struct pool {
   int maxfd;         /* Largest descriptor in the master set */
   fd_set masterfds;  /* Set containing all active descriptors */
@@ -38,8 +36,8 @@ typedef struct pool {
   int nready;        /* Number of ready descriptors from select */
   int maxi;          /* Max index of clientfd array             */
   int clientfd[FD_SETSIZE];   /* Array of active client descriptors */
-  int stored[FD_SETSIZE];/* Array of bools used for data storage indication */
-  char data[FD_SETSIZE][BUF_SIZE];   /* Array that contains echo strings */
+  //fsm* states[FD_SETSIZE]; /* Array of states for each client */
+  char data[FD_SETSIZE][BUF_SIZE];   /* Array that contains data from client */
 } pool;
 
 /** Global vars **/
@@ -168,6 +166,7 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
       }
 
+      /* Log client data */
       getnameinfo((struct sockaddr *) &cli_addr, cli_size,
                   hostname, BUF_SIZE, port, BUF_SIZE, 0);
       memset(log_buf, 0, BUF_SIZE);
@@ -177,7 +176,7 @@ int main(int argc, char* argv[])
       add_client(client_fd, pool);
     }
 
-    /* Echo a text line from each ready descriptor */
+    /* Read and respond to each client requests */
     check_clients(pool);
   }
 }
@@ -204,7 +203,6 @@ void init_pool(int listenfd, pool *p)
 
   memset(p->clientfd, -1, FD_SETSIZE*sizeof(int)); // No clients at the moment.
   memset(p->data, 0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
-  memset(p->stored, -1, FD_SETSIZE*sizeof(int));
 
   /* Initailly, listenfd is the only member of the read set */
   p->maxfd = listenfd;
@@ -249,10 +247,10 @@ void add_client(int client_fd, pool *p)
 }
 
 /*
- * @brief Iterates through active clients and echoes a text line.
+ * @brief Iterates through active clients and reads requests.
  *
  * Uses select to determine whether clients are ready for reading or
- * writing, then echoes a single line of text. Never blocks for a
+ * writing, reads a request. Never blocks for a
  * single user.
  *
  * @param p The pool of clients to iterate through.
@@ -264,66 +262,46 @@ void check_clients(pool *p)
 
   memset(buf,0,BUF_SIZE);
 
+  /* Iterate through all clients, and read their data */
   for(i = 0; (i <= p->maxi) && (p->nready > 0); i++)
   {
     client_fd = p->clientfd[i];
 
-    /* If a descriptor is ready to be read, echo a text line from it */
+    /* If a descriptor is ready to be read, read a line from it */
     if ((client_fd > 0) && (FD_ISSET(client_fd, &p->readfds)))
     {
       p->nready--;
 
-      if ((n = recv(client_fd, buf, BUF_SIZE, 0)) >= 1)
-      {
-        /* Check if ready for writing */
-        if(FD_ISSET(client_fd, &p->writefds))
-        {
-          if (send(client_fd, buf, n, 0) != n)
-          {
-            close_socket(client_fd);
-            log_error("Error sending to client.", logfile);
-          }
+      /* Recv bytes from the client */
+      n = recv(client_fd, buf, BUF_SIZE, 0);
 
-          memset(buf,0,BUF_SIZE);
-        }
-        /* Not ready, save request. */
-        else
+      /* We have received bytes, send for parsing. */
+      if (n >= 1)
+      {
+        if (send(client_fd, buf, n, 0) != n)
         {
-          strncpy(p->data[i], buf, n);
-          p->stored[i] = n;
-          log_error("Data stored.", logfile);
-          memset(buf,0,BUF_SIZE);
+          close_socket(client_fd);
+          fprintf(stderr, "Error sending to client. \n");
         }
+        memset(buf,0,BUF_SIZE);
       }
 
-      if (n == 0) /* Client sent EOF, close socket. */
+      /* Client sent EOF, close socket. */
+      if (n == 0)
       {
         close_socket(client_fd);
         FD_CLR(client_fd, &p->masterfds);
         p->clientfd[i] = -1;
-        p->stored[i] = -1;
         log_error("Client closed connection with EOF.", logfile);
       }
 
-      if (n == -1) /* Error with recv */
+      /* Error with recv */
+      if (n == -1)
       {
         close_socket(client_fd);
         FD_CLR(client_fd, &p->masterfds);
         p->clientfd[i] = -1;
-        p->stored[i] = -1;
         log_error("Error reading from client socket.", logfile);
-      }
-    }
-    /* If a descriptor has data to be sent, send it */
-    else if ((client_fd > 0) && (FD_ISSET(client_fd, &p->writefds)) &&
-             p->stored[i] > 0)
-    {
-      p->nready--;
-
-      if (send(client_fd, p->data[i], n, 0) != n)
-      {
-        close_socket(client_fd);
-        log_error("Error sending to client.", logfile);
       }
     }
   } // End of client loop.

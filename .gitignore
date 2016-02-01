@@ -1,9 +1,14 @@
 starter_code/*
 15-441-project-1/*
+www/*
+
+yolo
+
+*.o
+
 breakpts
 cp1_checker.py
 lisod
 15-441-project-1.tar
-*.o
 handin.txt
 .gdbinit
