@@ -25,20 +25,9 @@
 #include <unistd.h>
 #include <netdb.h>
 
-
+#include "lisod.h"
 #include "logger.h"
-
-typedef struct pool {
-  int maxfd;         /* Largest descriptor in the master set */
-  fd_set masterfds;  /* Set containing all active descriptors */
-  fd_set readfds;    /* Subset of descriptors ready for reading */
-  fd_set writefds;   /* Subset of descriptors ready for writing */
-  int nready;        /* Number of ready descriptors from select */
-  int maxi;          /* Max index of clientfd array             */
-  int clientfd[FD_SETSIZE];   /* Array of active client descriptors */
-  //fsm* states[FD_SETSIZE]; /* Array of states for each client */
-  char data[FD_SETSIZE][BUF_SIZE];   /* Array that contains data from client */
-} pool;
+#include "engine.h"
 
 /** Global vars **/
 FILE* logfile;   /* Legitimate use of globals, I swear! */
@@ -75,9 +64,10 @@ int main(int argc, char* argv[])
   //  char* wwwfolder = argv[5];
 
   /* Various buffers for read/write */
-  char log_buf[BUF_SIZE] = {0};
-  char hostname[BUF_SIZE] = {0};
-  char port[BUF_SIZE] = {0};
+  char log_buf[LOG_SIZE] = {0};
+  char hostname[LOG_SIZE] = {0};
+  char port[10] = {0};
+
 
   int listen_fd, client_fd;    // file descriptors.
   socklen_t cli_size;
@@ -146,7 +136,7 @@ int main(int argc, char* argv[])
                              NULL, NULL)) == -1)
     {
       close_socket(listen_fd);
-      memset(log_buf, 0, BUF_SIZE);
+      memset(log_buf, 0, LOG_SIZE);
       sprintf(log_buf, "Select failed! Error: %s", strerror(errno));
       log_error(log_buf,logfile);
       log_close(logfile);
@@ -168,8 +158,8 @@ int main(int argc, char* argv[])
 
       /* Log client data */
       getnameinfo((struct sockaddr *) &cli_addr, cli_size,
-                  hostname, BUF_SIZE, port, BUF_SIZE, 0);
-      memset(log_buf, 0, BUF_SIZE);
+                  hostname, LOG_SIZE, port, 10, 0);
+      memset(log_buf, 0, LOG_SIZE);
       sprintf(log_buf,
               "We have a new client: Say hi to %s:%s.", hostname, port);
       log_error(log_buf, logfile);
@@ -203,6 +193,7 @@ void init_pool(int listenfd, pool *p)
 
   memset(p->clientfd, -1, FD_SETSIZE*sizeof(int)); // No clients at the moment.
   memset(p->data, 0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
+  memset(p->states, 0, FD_SETSIZE*sizeof(fsm*)); // NULL out the fsms.
 
   /* Initailly, listenfd is the only member of the read set */
   p->maxfd = listenfd;
@@ -218,7 +209,7 @@ void init_pool(int listenfd, pool *p)
  */
 void add_client(int client_fd, pool *p)
 {
-  int i;
+  int i; fsm* state;
 
   p->nready--;
 
@@ -229,6 +220,25 @@ void add_client(int client_fd, pool *p)
 
       /* Add the descriptor to the master set */
       FD_SET(client_fd, &p->masterfds);
+
+      /* Create a fsm for this client */
+      state = malloc(sizeof(struct state));
+
+      /* Create initial values for fsm */
+      memset(state->request,0,BUF_SIZE);
+      memset(state->response,0,BUF_SIZE);
+      state->method = NULL;
+      state->uri = NULL;
+      state->version = NULL;
+      state->header = NULL;
+      state->body = NULL;
+      state->body_size = -1; // No body as of yet
+
+      state->end_idx = 0;
+      state->resp_idx = 0;
+
+      /* Add fsm to pool */
+      p->states[i] = state;
 
       /* Update max descriptor and max index */
       if (client_fd > p->maxfd)
@@ -257,8 +267,10 @@ void add_client(int client_fd, pool *p)
  */
 void check_clients(pool *p)
 {
-  int i, client_fd, n;
-  char buf[BUF_SIZE];
+  int i, client_fd, n, error;
+  fsm* state;
+  //  int readbytes = 0;
+  char buf[BUF_SIZE] = {0}; char log_buf[LOG_SIZE] = {0};
 
   memset(buf,0,BUF_SIZE);
 
@@ -272,40 +284,98 @@ void check_clients(pool *p)
     {
       p->nready--;
 
+      state = p->states[i];
+
       /* Recv bytes from the client */
       n = recv(client_fd, buf, BUF_SIZE, 0);
 
       /* We have received bytes, send for parsing. */
       if (n >= 1)
       {
-        if (send(client_fd, buf, n, 0) != n)
+        store_request(buf, n, state);
+
+        /* First, parse method, URI and version. */
+        if(state->method == NULL)
         {
-          close_socket(client_fd);
-          fprintf(stderr, "Error sending to client. \n");
+          /* Malformed Request */
+          if((error = parse_line(state)) == -2)
+          {
+            client_error(state, "411", "Malformed Request");
+            if (send(client_fd, state->response, state->resp_idx, 0)
+                != state->resp_idx)
+            {
+              rm_client(client_fd, p, "Unable to write to client", i);
+              continue;
+            }
+
+            rm_client(client_fd, p, "Malformed Request", i);
+            continue;
+          }
         }
-        memset(buf,0,BUF_SIZE);
+
+        /* Then, parse headers. */
+        if(state->header == NULL && state->method != NULL)
+        {
+          /* Malformed Request */
+          if((error = parse_headers(state)) == -2)
+          {
+            client_error(state, "411", "Malformed Request");
+            if (send(client_fd, state->response, state->resp_idx, 0) !=
+                state->resp_idx)
+            {
+              rm_client(client_fd, p, "Unable to write to client", i);
+              continue;
+            }
+
+            rm_client(client_fd, p, "Malformed Request", i);
+            continue;
+          }
+        }
+
+        /* If everything has been parsed, write to client */
+        if(state->method != NULL && state->header != NULL)
+        {
+          service(state);
+
+          if (send(client_fd, state->response, state->resp_idx, 0) !=
+              state->resp_idx)
+          {
+            rm_client(client_fd, p, "Unable to write to client", i);
+            continue;
+          }
+          else
+          {
+            memset(log_buf,0,LOG_SIZE);
+            sprintf(log_buf,"Sent %d bytes of data!", n);
+            log_error(log_buf,logfile);
+          }
+          memset(buf,0,BUF_SIZE);
+        }
       }
 
       /* Client sent EOF, close socket. */
       if (n == 0)
       {
-        close_socket(client_fd);
-        FD_CLR(client_fd, &p->masterfds);
-        p->clientfd[i] = -1;
-        log_error("Client closed connection with EOF.", logfile);
+        rm_client(client_fd, p, "Client closed connection with EOF", i);
       }
 
       /* Error with recv */
       if (n == -1)
       {
-        close_socket(client_fd);
-        FD_CLR(client_fd, &p->masterfds);
-        p->clientfd[i] = -1;
-        log_error("Error reading from client socket.", logfile);
+        rm_client(client_fd, p, "Error reading from client socket", i);
       }
-    }
+    } // End of read check
   } // End of client loop.
 }
+
+void rm_client(int client_fd, pool* p, char* logmsg, int i)
+{
+  close_socket(client_fd);
+  FD_CLR(client_fd, &p->masterfds);
+  p->clientfd[i] = -1;
+  log_error(logmsg, logfile);
+}
+
 
 void cleanup(int sig)
 {

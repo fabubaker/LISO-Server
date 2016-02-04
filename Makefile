@@ -11,11 +11,14 @@ CFLAGS = -Wall -Wextra -Werror -g -std=gnu99
 
 all: lisod
 
-lisod: lisod.c logger.o
-	$(CC) $(CFLAGS) lisod.c logger.o -o lisod
+lisod: lisod.c logger.o engine.o
+	$(CC) $(CFLAGS) lisod.c logger.o engine.o -o lisod
 
 logger: logger.h logger.c
 	$(CC) $(CFLAGS) logger.c -o logger.o
+
+engine: engine.h engine.c
+		$(CC) $(CFLAGS) engine.c -o engine.o
 
 handin:
 	(make clean; tar cvf 15-441-project-1.tar -T handin.txt)
