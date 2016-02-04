@@ -14,8 +14,9 @@ typedef struct state {
   char* uri;    // index into uri
   char* version; // you get the idea
   char* header;  // index into the headers
-  char* body;  // index into body
-  ssize_t body_size; // size of body
+
+  char* body;  // alloc array for body to send
+  ssize_t body_size; // size of body to send
 
   int end_idx; // used to mark end of data in buffer
   int resp_idx; // used to mark end of response buffer

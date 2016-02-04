@@ -52,25 +52,25 @@ int parse_line(fsm* state)
   method = strtok(tmpbuf," ");
 
   if (method == NULL)
-    return -2;
+  {free(tmpbuf); return -2;}
 
   /* Check if correct method */
   if (strncmp(method,"GET",strlen("GET")) && strncmp(method,"HEAD",strlen("HEAD"))
       && strncmp(method, "POST", strlen("POST")))
-    return -2;
+  {free(tmpbuf); return -2;}
 
   if((uri = strtok(NULL," ")) == NULL)
-    return -2;
+  {free(tmpbuf); return -2;}
 
   if((version = strtok(NULL, " ")) == NULL)
-    return -2;
+  {free(tmpbuf); return -2;}
 
   if(strncmp(version,"HTTP/1.1",strlen("HTTP/1.1")))
-    return -2;
+  {free(tmpbuf); return -2;}
 
   /* If there's one more token, malformed request */
   if(strtok(NULL," ") != NULL)
-    return -2;
+  {free(tmpbuf); return -2;}
 
   /* These are all malloced by strdup, so it is safe */
   state->method = method;
@@ -89,14 +89,14 @@ int parse_line(fsm* state)
  */
 int parse_headers(fsm* state)
 {
-  if(strncmp(state->method,"POST", strlen("POST")))
-  {
-    state->header = (char *)1; // make the variable not NULL
-    return 0;
-  }
-
   char* CRLF; char* tmpbuf; char* body_size;
   size_t length;
+
+  if(strncmp(state->method,"POST",strlen("POST")))
+  {
+    state->header = (char *)1;
+    return 0;
+  }
 
   CRLF = memmem(state->request, state->end_idx, "\r\n\r\n", strlen("\r\n\r\n"));
 
@@ -146,7 +146,7 @@ int store_request(char* buf, int size, fsm* state)
     return -2;
 
   /* Store away in fsm */
-  strncpy(state->request+state->end_idx, buf, size);
+  memcpy(state->request+state->end_idx, buf, size);
   state->end_idx += size;
 
   return 0;
@@ -161,18 +161,17 @@ int service(fsm* state)
   struct tm *Date; time_t t;
   struct tm *Modified;
   struct stat meta;
-  char* response = state->response;
   char timestr[200] = {0};
+  char* response = state->response;
 
-  int pathlength = strlen(state->uri)+strlen(state->www)+strlen("/")+1;
+  int pathlength = strlen(state->uri) + strlen(state->www) +1;
   char* path = malloc(pathlength);
   memset(path,0,pathlength);
 
   strncat(path,state->www,strlen(state->www));
-  strncat(path,"/",strlen("/"));
   strncat(path,state->uri,strlen(state->uri));
 
-  //  FILE *file;
+  FILE *file;
 
   t = time(NULL);
   Date = gmtime(&t);
@@ -197,24 +196,26 @@ int service(fsm* state)
       return -2;
     }
 
-    /* Open uri specified by client */
-    // file = fopen(method->uri,"r");
+    /* Open uri specified by client and save it in state*/
+    file = fopen(path,"r");
+    state->body = malloc(meta.st_size);
+    state->body_size = meta.st_size;
+    fread(state->body,1,state->body_size,file);
 
     Modified = gmtime(&meta.st_mtime);
 
     sprintf(response, "HTTP/1.1 200 OK\r\n");
     sprintf(response, "%sDate: %s\r\n", response,timestr);
-    sprintf(response, "%sServer: Liso/1.0\r\n\r\n", response);
+    sprintf(response, "%sServer: Liso/1.0\r\n", response);
     // sprintf(response, "%sContent-Type: %s\r\n", response, );
     sprintf(response, "%sContent-Length: %jd\r\n", response, meta.st_size);
-
     memset(timestr, 0, 200);
     if(strftime(timestr, 200, "%a, %d %b %y %T %z" , Modified) == 0)
     {
       return -1;
     }
 
-    sprintf(response, "%sLast-Modified: %s\r\n", response, timestr);
+    sprintf(response, "%sLast-Modified: %s\r\n\r\n", response, timestr);
     state->resp_idx = (int)strlen(response);
   }
 
@@ -232,6 +233,7 @@ void client_error(fsm* state, char* errnum, char* errormsg)
   /* Build the HTTP response body */
   sprintf(response, "HTTP/1.0 %s %s\r\n", errnum, errormsg);
   sprintf(response, "%sContent-type: text/html\r\n", response);
+  sprintf(response, "%sServer: Liso/1.0\r\n", response);
 
   sprintf(body, "<html><title>Webserver Error!</title>");
   sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
@@ -239,9 +241,66 @@ void client_error(fsm* state, char* errnum, char* errormsg)
   sprintf(body, "%s<hr><em>Fadhil's Web Server </em>\r\n", body);
 
   sprintf(response, "%sContent-length: %d\r\n\r\n", response,(int)strlen(body));
+
   sprintf(response, "%s%s", response, body);
 
   state->resp_idx += strlen(response);
+}
+
+/*
+ *
+ * @returns length of new end
+ */
+int resetbuf(char* buf, int end)
+{
+  char* CRLF; char* next;
+  size_t length;
+
+  /* Since we've serviced at least one request, CRLF should show up */
+  CRLF = memmem(buf, end, "\r\n\r\n", strlen("\r\n\r\n"));
+
+  if (CRLF == NULL)
+    return -1;
+
+  /* length of the 1st request including CRLF */
+  length = (size_t)(strlen("\r\n\r\n") + CRLF - buf);
+
+  if(length >= 8192)
+  {
+    /* buf was full, just memset */
+    memset(buf, 0, BUF_SIZE);
+    return 0;
+  }
+
+  next = CRLF+4;
+
+  /* Copy remaining requests to start of buf */
+  memcpy(buf,next,BUF_SIZE-length);
+
+  /* Zero out the rest of the buf */
+  memset(buf+(BUF_SIZE-length),0,length);
+
+  return strlen(buf);
+}
+
+void clean_state(fsm* state)
+{
+  memset(state->response, 0, BUF_SIZE);
+
+  if(state->method != NULL)
+    free(state->method);
+
+  state->method = NULL;
+  state->uri = NULL;
+  state->version = NULL;
+
+  if(state->body != NULL)
+    free(state->body);
+
+  state->body = NULL;
+  state->body_size = 0;
+
+  state->resp_idx = 0;
 }
 
 /**********************************************************/

@@ -313,6 +313,9 @@ void check_clients(pool *p)
             rm_client(client_fd, p, "Malformed Request", i);
             continue;
           }
+
+          /* Incomplete request, save and continue */
+          if(error == -1) continue;
         }
 
         /* Then, parse headers. */
@@ -332,6 +335,9 @@ void check_clients(pool *p)
             rm_client(client_fd, p, "Malformed Request", i);
             continue;
           }
+
+          /* Incomplete headers, continue */
+          if(error == -1) continue;
         }
 
         /* If everything has been parsed, write to client */
@@ -350,20 +356,28 @@ void check_clients(pool *p)
             continue;
           }
 
-          if (send(client_fd, state->response, state->resp_idx, 0) !=
-              state->resp_idx)
+          if (send(client_fd, state->response, state->resp_idx, 0)
+               != state->resp_idx ||
+              send(client_fd, state->body, state->body_size, 0)
+               != state->body_size)
           {
             rm_client(client_fd, p, "Unable to write to client", i);
             continue;
           }
+
           else
           {
             memset(log_buf,0,LOG_SIZE);
-            sprintf(log_buf,"Sent %d bytes of data!", state->resp_idx);
+            sprintf(log_buf,"Sent %d bytes of data!",
+                    state->resp_idx+(int)state->body_size);
             log_error(log_buf,logfile);
           }
           memset(buf,0,BUF_SIZE);
         }
+
+        /* Finished serving one request, reset buffer */
+        state->end_idx = resetbuf(state->request, state->end_idx);
+        clean_state(state);
       }
 
       /* Client sent EOF, close socket. */
