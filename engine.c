@@ -6,6 +6,7 @@
 /* @author Fadhil Abubaker                                        */
 /******************************************************************/
 
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,7 +72,7 @@ int parse_line(fsm* state)
   if(strtok(NULL," ") != NULL)
     return -2;
 
-  /* These are all malloced by strdup */
+  /* These are all malloced by strdup, so it is safe */
   state->method = method;
   state->uri = uri;
   state->version = version;
@@ -157,13 +158,26 @@ int store_request(char* buf, int size, fsm* state)
  */
 int service(fsm* state)
 {
-  struct tm *tmp; time_t t;
+  struct tm *Date; time_t t;
+  struct tm *Modified;
+  struct stat meta;
   char* response = state->response;
   char timestr[200] = {0};
 
+  int pathlength = strlen(state->uri)+strlen(state->www)+strlen("/")+1;
+  char* path = malloc(pathlength);
+  memset(path,0,pathlength);
+
+  strncat(path,state->www,strlen(state->www));
+  strncat(path,"/",strlen("/"));
+  strncat(path,state->uri,strlen(state->uri));
+
+  //  FILE *file;
+
   t = time(NULL);
-  tmp = gmtime(&t);
-  if (tmp == NULL)
+  Date = gmtime(&t);
+
+  if (Date == NULL)
   {
     return -1;
   }
@@ -171,17 +185,40 @@ int service(fsm* state)
   if(!strncmp(state->method,"GET",strlen("GET")) ||
      !strncmp(state->method,"HEAD",strlen("HEAD")))
   {
-    if(strftime(timestr, 200, "%a, %d %b %y %T %z" ,tmp) == 0)
+    /* Grab Date of message */
+    if(strftime(timestr, 200, "%a, %d %b %y %T %z" ,Date) == 0)
     {
       return -1;
     }
 
+    /* Check if file exists */
+    if(stat(path, &meta) == -1)
+    {
+      return -2;
+    }
+
+    /* Open uri specified by client */
+    // file = fopen(method->uri,"r");
+
+    Modified = gmtime(&meta.st_mtime);
+
     sprintf(response, "HTTP/1.1 200 OK\r\n");
-    sprintf(response, "%sDate: %s \r\n", response,timestr);
+    sprintf(response, "%sDate: %s\r\n", response,timestr);
     sprintf(response, "%sServer: Liso/1.0\r\n\r\n", response);
+    // sprintf(response, "%sContent-Type: %s\r\n", response, );
+    sprintf(response, "%sContent-Length: %jd\r\n", response, meta.st_size);
+
+    memset(timestr, 0, 200);
+    if(strftime(timestr, 200, "%a, %d %b %y %T %z" , Modified) == 0)
+    {
+      return -1;
+    }
+
+    sprintf(response, "%sLast-Modified: %s\r\n", response, timestr);
     state->resp_idx = (int)strlen(response);
   }
 
+  free(path);
   return 0;
 }
 

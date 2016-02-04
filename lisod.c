@@ -36,7 +36,7 @@ FILE* logfile;   /* Legitimate use of globals, I swear! */
 
 int close_socket(int sock);
 void init_pool(int listenfd, pool *p);
-void add_client(int client_fd, pool *p);
+void add_client(int client_fd, char* wwwfolder, pool *p);
 void check_clients(pool *p);
 void cleanup(int sig);
 
@@ -44,7 +44,7 @@ void cleanup(int sig);
 
 int main(int argc, char* argv[])
 {
-  if (argc != 4 && argc != 9) // argc = 9
+  if (argc != 5 && argc != 9) // argc = 9
   {
     fprintf(stderr, "%d \n", argc);
     fprintf(stderr, "usage: %s <HTTP port> <HTTPS port> <log file> ", argv[0]);
@@ -61,7 +61,7 @@ int main(int argc, char* argv[])
   /* Parse cmdline args */
   short listen_port = atoi(argv[1]);
   logfile = log_open(argv[3]);
-  //  char* wwwfolder = argv[5];
+  char* wwwfolder = argv[4];
 
   /* Various buffers for read/write */
   char log_buf[LOG_SIZE] = {0};
@@ -163,7 +163,7 @@ int main(int argc, char* argv[])
       sprintf(log_buf,
               "We have a new client: Say hi to %s:%s.", hostname, port);
       log_error(log_buf, logfile);
-      add_client(client_fd, pool);
+      add_client(client_fd, wwwfolder,pool);
     }
 
     /* Read and respond to each client requests */
@@ -207,7 +207,7 @@ void init_pool(int listenfd, pool *p)
  * @param client_fd The client file descriptor.
  * @param p         The pool struct to update.
  */
-void add_client(int client_fd, pool *p)
+void add_client(int client_fd, char* wwwfolder, pool *p)
 {
   int i; fsm* state;
 
@@ -236,6 +236,8 @@ void add_client(int client_fd, pool *p)
 
       state->end_idx = 0;
       state->resp_idx = 0;
+
+      state->www = wwwfolder;
 
       /* Add fsm to pool */
       p->states[i] = state;
@@ -335,7 +337,18 @@ void check_clients(pool *p)
         /* If everything has been parsed, write to client */
         if(state->method != NULL && state->header != NULL)
         {
-          service(state);
+          if (service(state) == -2)
+          {
+            client_error(state, "404", "File Not Found");
+            if (send(client_fd, state->response, state->resp_idx, 0) !=
+                state->resp_idx)
+            {
+              rm_client(client_fd, p, "Unable to write to client", i);
+              continue;
+            }
+            rm_client(client_fd, p, "File not found...", i);
+            continue;
+          }
 
           if (send(client_fd, state->response, state->resp_idx, 0) !=
               state->resp_idx)
@@ -346,7 +359,7 @@ void check_clients(pool *p)
           else
           {
             memset(log_buf,0,LOG_SIZE);
-            sprintf(log_buf,"Sent %d bytes of data!", n);
+            sprintf(log_buf,"Sent %d bytes of data!", state->resp_idx);
             log_error(log_buf,logfile);
           }
           memset(buf,0,BUF_SIZE);
@@ -375,7 +388,6 @@ void rm_client(int client_fd, pool* p, char* logmsg, int i)
   p->clientfd[i] = -1;
   log_error(logmsg, logfile);
 }
-
 
 void cleanup(int sig)
 {

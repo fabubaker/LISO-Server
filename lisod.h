@@ -9,6 +9,7 @@
 typedef struct state {
   char request[BUF_SIZE]; // arr of chars containing the text of the request.
   char response[BUF_SIZE]; // arr of chars containing response to client.
+
   char* method; // index into method
   char* uri;    // index into uri
   char* version; // you get the idea
@@ -18,6 +19,9 @@ typedef struct state {
 
   int end_idx; // used to mark end of data in buffer
   int resp_idx; // used to mark end of response buffer
+
+  char* www; // The www folder
+
 } fsm;
 
 typedef struct pool {
