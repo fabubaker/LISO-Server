@@ -21,7 +21,8 @@ engine: engine.h engine.c
 		$(CC) $(CFLAGS) engine.c -o engine.o
 
 handin:
-	(make clean; tar cvf 15-441-project-1.tar -T handin.txt)
+	(make clean; cd ..; tar cvf fabubake.tar 15-441-project-1 --exclude cp1_checker.py --exclude starter_code --exclude www --exclude handin.txt --exclude yolo --exclude ".gdbinit" --exclude ".gitignore");
+
 
 echo_client:
 	$(CC) $(CFLAGS) echo_client.c -o echo_client

@@ -14,17 +14,19 @@
 
 #include "engine.h"
 
-/**********************************************************/
-/* @brief Parses a given buf based on state and populates */
-/* a struct with parsed tokens if successful. If request  */
-/* is incomplete, stash it as its state.                  */
-/*                                                        */
-/* @param state The saved state of the client             */
-/*                                                        */
-/* @retval  0  if successful                              */
-/* @retval -1  if incomplete request                      */
-/* @retval -2  if malformed                               */
-/**********************************************************/
+/*
+@brief Parses a given buf based on state and populates
+a struct with parsed tokens if successful. If request
+is incomplete, stash it as its state.
+
+@param state The saved state of the client
+
+@retval  0    if successful
+@retval -1    if incomplete request
+@retval 400   if malformed
+@retval 500   if internal error
+@retval 505   if wrong version
+*/
 int parse_line(fsm* state)
 {
   char* CRLF; char* tmpbuf;
@@ -42,7 +44,7 @@ int parse_line(fsm* state)
                 "\r\n", strlen("\r\n"));
 
   if(CRLF == NULL)
-    return -2;
+    return 500;
 
   /* Copy request line */
   length = (size_t)(CRLF - state->request);
@@ -52,25 +54,25 @@ int parse_line(fsm* state)
   method = strtok(tmpbuf," ");
 
   if (method == NULL)
-  {free(tmpbuf); return -2;}
+  {free(tmpbuf); return 400;}
 
   /* Check if correct method */
   if (strncmp(method,"GET",strlen("GET")) && strncmp(method,"HEAD",strlen("HEAD"))
       && strncmp(method, "POST", strlen("POST")))
-  {free(tmpbuf); return -2;}
+  {free(tmpbuf); return 501;}
 
   if((uri = strtok(NULL," ")) == NULL)
-  {free(tmpbuf); return -2;}
+  {free(tmpbuf); return 400;}
 
   if((version = strtok(NULL, " ")) == NULL)
-  {free(tmpbuf); return -2;}
+  {free(tmpbuf); return 400;}
 
   if(strncmp(version,"HTTP/1.1",strlen("HTTP/1.1")))
-  {free(tmpbuf); return -2;}
+  {free(tmpbuf); return 505;}
 
   /* If there's one more token, malformed request */
   if(strtok(NULL," ") != NULL)
-  {free(tmpbuf); return -2;}
+  {free(tmpbuf); return 400;}
 
   /* These are all malloced by strdup, so it is safe */
   state->method = method;
@@ -84,53 +86,69 @@ int parse_line(fsm* state)
   Currently parses only Content-Length for POST.
 
   @retval  0  Success
-  @retval -2  Unrecoverable error
-  @retval -1  No CL header
+  @retval 411  No CL header (411)
+  @retval 400  malformed request (400)
+  @retval 500  internal error (500)
+
  */
 int parse_headers(fsm* state)
 {
   char* CRLF; char* tmpbuf; char* body_size;
   size_t length;
 
-  if(strncmp(state->method,"POST",strlen("POST")))
-  {
-    state->header = (char *)1;
-    return 0;
-  }
-
   CRLF = memmem(state->request, state->end_idx, "\r\n\r\n", strlen("\r\n\r\n"));
 
   if(CRLF == NULL)
-    return -2;
+    return 500;
+
+  /* First extract Connection: */
+
+  tmpbuf = memmem(state->request, state->end_idx, "Connection: close\r\n",
+                  strlen("Connection: close\r\n"));
+
+  if(tmpbuf == NULL)
+    state->conn = 1; // Keep Alive
+  else
+    state->conn = 0; // Close
+
+  /* Now extract Content-Length: if POST */
+
+  if(strncmp(state->method,"POST",strlen("POST")))
+  {
+    state->header = (char*) 1; // For now
+    return 0;
+  }
 
   tmpbuf = memmem(state->request, state->end_idx, "Content-Length:",
                   strlen("Content-Length:"));
 
   if(tmpbuf == NULL)
-    return -1;
+    return 411;
 
   CRLF = memmem(tmpbuf, state->end_idx, "\r\n", strlen("\r\n"));
   length = (size_t)(CRLF - tmpbuf);
   tmpbuf = strndup(tmpbuf, length); // Free this guy please.
 
   if(strtok(tmpbuf," ") == NULL)
-    return -1;
+  {free(tmpbuf);return 411;}
 
   if((body_size = strtok(NULL, " ")) == NULL)
-    return -1;
+  {free(tmpbuf);return 411;}
 
   /* If there's one more token, malformed request */
   if(strtok(NULL," ") != NULL)
-    return -2;
+  {free(tmpbuf);return 400;}
 
   /* insert code to check if actually a number */
   state->body_size = (size_t)atoi(body_size);
+  free(tmpbuf);
 
+  state->header = (char*) 1; // For now
   return 0;
 }
 
 /*
-
+  For later...
  */
 int parse_body()
 {
@@ -153,69 +171,105 @@ int store_request(char* buf, int size, fsm* state)
 }
 /*
   @retval  0  success
-  @retval -1  unrecoverable error
-  @retval -2  404
+  @retval 500 internal server error
+  @retval 404 File not found
  */
 int service(fsm* state)
 {
   struct tm *Date; time_t t;
   struct tm *Modified;
   struct stat meta;
-  char timestr[200] = {0};
+  char timestr[200] = {0}; char type[40] = {0};
   char* response = state->response;
+  FILE *file;
 
-  int pathlength = strlen(state->uri) + strlen(state->www) +1;
+  int pathlength = strlen(state->uri) + strlen(state->www) + strlen("/") + 1;
   char* path = malloc(pathlength);
   memset(path,0,pathlength);
 
-  strncat(path,state->www,strlen(state->www));
-  strncat(path,state->uri,strlen(state->uri));
-
-  FILE *file;
+  if(!strncmp(state->uri, "/", strlen("/")) && strlen(state->uri) == 1)
+  {
+    strncat(path,state->www,strlen(state->www));
+    strncat(path,"/",strlen("/"));
+    strncat(path,"index.html",strlen("index.html"));
+  }
+  else
+  {
+    strncat(path,state->www,strlen(state->www));
+    strncat(path,"/",strlen("/"));
+    strncat(path,state->uri,strlen(state->uri));
+  }
 
   t = time(NULL);
   Date = gmtime(&t);
 
   if (Date == NULL)
   {
-    return -1;
+    return 500;
   }
 
   if(!strncmp(state->method,"GET",strlen("GET")) ||
      !strncmp(state->method,"HEAD",strlen("HEAD")))
   {
     /* Grab Date of message */
-    if(strftime(timestr, 200, "%a, %d %b %y %T %z" ,Date) == 0)
+    if(strftime(timestr, 200, "%a, %d %b %Y %H:%M:%S %Z" ,Date) == 0)
     {
-      return -1;
+      return 500;
     }
 
     /* Check if file exists */
     if(stat(path, &meta) == -1)
     {
-      return -2;
+      return 404;
     }
 
-    /* Open uri specified by client and save it in state*/
-    file = fopen(path,"r");
-    state->body = malloc(meta.st_size);
-    state->body_size = meta.st_size;
-    fread(state->body,1,state->body_size,file);
+    if(!strncmp(state->method, "GET",strlen("GET")))
+    {
+      /* Open uri specified by client and save it in state*/
+      file = fopen(path,"r");
+      state->body = malloc(meta.st_size);
+      state->body_size = meta.st_size;
+      fread(state->body,1,state->body_size,file);
+    }
+    else
+    {
+      state->body = NULL;
+      state->body_size = 0;
+    }
 
     Modified = gmtime(&meta.st_mtime);
 
     sprintf(response, "HTTP/1.1 200 OK\r\n");
     sprintf(response, "%sDate: %s\r\n", response,timestr);
     sprintf(response, "%sServer: Liso/1.0\r\n", response);
-    // sprintf(response, "%sContent-Type: %s\r\n", response, );
+
+    if(!state->conn)
+      sprintf(response, "%sConnection: close\r\n", response);
+    else
+      sprintf(response, "%sConnection: keep-alive\r\n", response);
+
+    if(mimetype(state->uri, strlen(state->uri),type))
+      sprintf(response, "%sContent-Type: %s\r\n", response, type);
+
     sprintf(response, "%sContent-Length: %jd\r\n", response, meta.st_size);
     memset(timestr, 0, 200);
-    if(strftime(timestr, 200, "%a, %d %b %y %T %z" , Modified) == 0)
+
+    if(strftime(timestr, 200, "%a, %d %b %Y %H:%M:%S %Z" , Modified) == 0)
     {
-      return -1;
+      return 500;
     }
 
     sprintf(response, "%sLast-Modified: %s\r\n\r\n", response, timestr);
+    state->resp_idx = (int)strlen(response);
+  }
+  else
+  {
+    state->body = NULL;
+    state->body_size = 0;
+
+    sprintf(response, "HTTP/1.1 200 OK\r\n");
+    sprintf(response, "%sDate: %s\r\n", response,timestr);
+    sprintf(response, "%sServer: Liso/1.0\r\n\r\n", response);
     state->resp_idx = (int)strlen(response);
   }
 
@@ -223,28 +277,56 @@ int service(fsm* state)
   return 0;
 }
 
-void client_error(fsm* state, char* errnum, char* errormsg)
+/*
+ *
+ * @retval 0 if unrecognizable
+ * @retval 1 if successful
+ *
+ */
+int mimetype(char* file, size_t len, char* type)
 {
-  char* response = state->response;
-  char body[LOG_SIZE] = {0};
+  char* ext; size_t extlen;
 
-  memset(response,0,BUF_SIZE);
+  ext = memmem(file, len, ".", strlen("."));
 
-  /* Build the HTTP response body */
-  sprintf(response, "HTTP/1.0 %s %s\r\n", errnum, errormsg);
-  sprintf(response, "%sContent-type: text/html\r\n", response);
-  sprintf(response, "%sServer: Liso/1.0\r\n", response);
+  if(ext == NULL)
+    return 0;
 
-  sprintf(body, "<html><title>Webserver Error!</title>");
-  sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
-  sprintf(body, "%s%s: %s\r\n", body, errnum, errormsg);
-  sprintf(body, "%s<hr><em>Fadhil's Web Server </em>\r\n", body);
+  extlen = len - (size_t)((ext + 1) - file);
 
-  sprintf(response, "%sContent-length: %d\r\n\r\n", response,(int)strlen(body));
+  if((size_t)((ext+1) - file) == len)
+  {
+    return 0;
+  }
 
-  sprintf(response, "%s%s", response, body);
+  memcpy(type, ext+1, extlen);
 
-  state->resp_idx += strlen(response);
+  if(!strncmp(type,"html",strlen("html")))
+  {
+    sprintf(type, "text/html"); return 1;
+  }
+
+  if(!strncmp(type,"css",strlen("css")))
+  {
+    sprintf(type, "text/css"); return 1;
+  }
+
+  if(!strncmp(type,"png",strlen("png")))
+  {
+    sprintf(type, "image/png"); return 1;
+  }
+
+  if(!strncmp(type,"jpeg",strlen("jpeg")))
+  {
+    sprintf(type, "image/jpeg"); return 1;
+  }
+
+  if(!strncmp(type,"gif",strlen("gif")))
+  {
+    sprintf(type, "image/gif"); return 1;
+  }
+
+  return 0;
 }
 
 /*
@@ -286,6 +368,7 @@ int resetbuf(char* buf, int end)
 void clean_state(fsm* state)
 {
   memset(state->response, 0, BUF_SIZE);
+  state->header = NULL;
 
   if(state->method != NULL)
     free(state->method);

@@ -44,7 +44,7 @@ void cleanup(int sig);
 
 int main(int argc, char* argv[])
 {
-  if (argc != 5 && argc != 9) // argc = 9
+  if (argc != 6 && argc != 9) // argc = 9
   {
     fprintf(stderr, "%d \n", argc);
     fprintf(stderr, "usage: %s <HTTP port> <HTTPS port> <log file> ", argv[0]);
@@ -61,18 +61,19 @@ int main(int argc, char* argv[])
   /* Parse cmdline args */
   short listen_port = atoi(argv[1]);
   logfile = log_open(argv[3]);
-  char* wwwfolder = argv[4];
+  char* wwwfolder = argv[5];
 
   /* Various buffers for read/write */
   char log_buf[LOG_SIZE] = {0};
   char hostname[LOG_SIZE] = {0};
   char port[10] = {0};
 
-
   int listen_fd, client_fd;    // file descriptors.
   socklen_t cli_size;
   struct sockaddr_in serv_addr, cli_addr;
   pool *pool = malloc(sizeof(struct pool));
+  struct timeval tv;
+  tv.tv_sec = 5;
 
   if(pool == NULL)
   {
@@ -133,7 +134,7 @@ int main(int argc, char* argv[])
     pool->writefds = pool->masterfds;
 
     if((pool->nready = select(pool->maxfd+1, &pool->readfds, &pool->writefds,
-                             NULL, NULL)) == -1)
+                             NULL, &tv)) == -1)
     {
       close_socket(listen_fd);
       memset(log_buf, 0, LOG_SIZE);
@@ -213,6 +214,25 @@ void add_client(int client_fd, char* wwwfolder, pool *p)
 
   p->nready--;
 
+  /* Create a fsm for this client */
+  state = malloc(sizeof(struct state));
+
+  /* Create initial values for fsm */
+  memset(state->request,0,BUF_SIZE);
+  memset(state->response,0,BUF_SIZE);
+  state->method = NULL;
+  state->uri = NULL;
+  state->version = NULL;
+  state->header = NULL;
+  state->body = NULL;
+  state->body_size = -1; // No body as of yet
+
+  state->end_idx = 0;
+  state->resp_idx = 0;
+
+  state->www = wwwfolder;
+  state->conn = 1;
+
   for (i = 0; i < FD_SETSIZE; i++)  /* Find an available slot */
   {
     if(p->clientfd[i] < 0) {   /* Found one free slot */
@@ -220,24 +240,6 @@ void add_client(int client_fd, char* wwwfolder, pool *p)
 
       /* Add the descriptor to the master set */
       FD_SET(client_fd, &p->masterfds);
-
-      /* Create a fsm for this client */
-      state = malloc(sizeof(struct state));
-
-      /* Create initial values for fsm */
-      memset(state->request,0,BUF_SIZE);
-      memset(state->response,0,BUF_SIZE);
-      state->method = NULL;
-      state->uri = NULL;
-      state->version = NULL;
-      state->header = NULL;
-      state->body = NULL;
-      state->body_size = -1; // No body as of yet
-
-      state->end_idx = 0;
-      state->resp_idx = 0;
-
-      state->www = wwwfolder;
 
       /* Add fsm to pool */
       p->states[i] = state;
@@ -253,8 +255,11 @@ void add_client(int client_fd, char* wwwfolder, pool *p)
 
   if (i == FD_SETSIZE)   /* There are no empty slots */
   {
+    client_error(state, 503);
+    send(client_fd, state->response, state->resp_idx, 0);
     log_error("Too many clients! Closing client socket...", logfile);
     close_socket(client_fd);
+    free(state);
   }
 }
 
@@ -300,17 +305,16 @@ void check_clients(pool *p)
         if(state->method == NULL)
         {
           /* Malformed Request */
-          if((error = parse_line(state)) == -2)
+          if((error = parse_line(state)) != 0 && error != -1)
           {
-            client_error(state, "411", "Malformed Request");
+            client_error(state, error);
             if (send(client_fd, state->response, state->resp_idx, 0)
                 != state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
               continue;
             }
-
-            rm_client(client_fd, p, "Malformed Request", i);
+            rm_client(client_fd, p, "HTTP error", i);
             continue;
           }
 
@@ -322,37 +326,33 @@ void check_clients(pool *p)
         if(state->header == NULL && state->method != NULL)
         {
           /* Malformed Request */
-          if((error = parse_headers(state)) == -2)
+          if((error = parse_headers(state)) != 0)
           {
-            client_error(state, "411", "Malformed Request");
+            client_error(state, error);
             if (send(client_fd, state->response, state->resp_idx, 0) !=
                 state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
               continue;
             }
-
-            rm_client(client_fd, p, "Malformed Request", i);
+            rm_client(client_fd, p, "HTTP error", i);
             continue;
           }
-
-          /* Incomplete headers, continue */
-          if(error == -1) continue;
         }
 
         /* If everything has been parsed, write to client */
         if(state->method != NULL && state->header != NULL)
         {
-          if (service(state) == -2)
+          if ((error = service(state)) != 0)
           {
-            client_error(state, "404", "File Not Found");
+            client_error(state, error);
             if (send(client_fd, state->response, state->resp_idx, 0) !=
                 state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
               continue;
             }
-            rm_client(client_fd, p, "File not found...", i);
+            rm_client(client_fd, p, "HTTP error", i);
             continue;
           }
 
@@ -378,6 +378,7 @@ void check_clients(pool *p)
         /* Finished serving one request, reset buffer */
         state->end_idx = resetbuf(state->request, state->end_idx);
         clean_state(state);
+        if(!state->conn) rm_client(client_fd, p, "Connection: close", i);
       }
 
       /* Client sent EOF, close socket. */
@@ -401,6 +402,60 @@ void rm_client(int client_fd, pool* p, char* logmsg, int i)
   FD_CLR(client_fd, &p->masterfds);
   p->clientfd[i] = -1;
   log_error(logmsg, logfile);
+}
+
+void client_error(fsm* state, int error)
+{
+  char* response = state->response;
+  char body[LOG_SIZE] = {0};
+  char* errnum; char* errormsg;
+
+  memset(response,0,BUF_SIZE);
+
+  switch (error)
+  {
+    case 404:
+      errnum = "404";
+      errormsg = "Not Found";
+      break;
+    case 411:
+      errnum = "411";
+      errormsg = "Length Required";
+      break;
+    case 500:
+      errnum = "500";
+      errormsg = "Internal Server Error";
+      break;
+    case 501:
+      errnum = "501";
+      errormsg = "Not Implemented";
+      break;
+    case 503:
+      errnum = "503";
+      errormsg = "Service Unavailable";
+      break;
+    case 505:
+      errnum = "505";
+      errormsg = "HTTP Version Not Supported";
+      break;
+  }
+
+  /* Build the HTTP response body */
+  sprintf(response, "HTTP/1.1 %s %s\r\n", errnum, errormsg);
+  sprintf(response, "%sContent-type: text/html\r\n", response);
+  sprintf(response, "%sServer: Liso/1.0\r\n", response);
+
+  sprintf(body, "<html><title>Webserver Error!</title>");
+  sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
+  sprintf(body, "%s%s: %s\r\n", body, errnum, errormsg);
+  sprintf(body, "%s<hr><em>Fadhil's Web Server </em>\r\n", body);
+
+  sprintf(response,"%sConnection: close\r\n",response);
+  sprintf(response, "%sContent-Length: %d\r\n\r\n", response,(int)strlen(body));
+
+  sprintf(response, "%s%s", response, body);
+
+  state->resp_idx += strlen(response);
 }
 
 void cleanup(int sig)

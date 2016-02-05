@@ -22,6 +22,7 @@ typedef struct state {
   int resp_idx; // used to mark end of response buffer
 
   char* www; // The www folder
+  int conn;  // 1 = keep-alive; 0 = close
 
 } fsm;
 
@@ -38,5 +39,6 @@ typedef struct pool {
 } pool;
 
 void rm_client(int client_fd, pool* p, char* logmsg, int i);
+void client_error(fsm* state, int error);
 void cleanup(int sig);
 #endif
