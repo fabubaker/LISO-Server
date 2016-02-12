@@ -130,14 +130,18 @@ int parse_headers(fsm* state)
   tmpbuf = strndup(tmpbuf, length); // Free this guy please.
 
   if(strtok(tmpbuf," ") == NULL)
-  {free(tmpbuf);return 411;}
+  {free(tmpbuf); return 411;}
 
   if((body_size = strtok(NULL, " ")) == NULL)
-  {free(tmpbuf);return 411;}
+  {free(tmpbuf); return 411;}
+
+  /* Check for valid Content-Length */
+  if(!validsize(body_size))
+  {free(tmpbuf); return 411;}
 
   /* If there's one more token, malformed request */
   if(strtok(NULL," ") != NULL)
-  {free(tmpbuf);return 400;}
+  {free(tmpbuf); return 400;}
 
   /* insert code to check if actually a number */
   state->body_size = (size_t)atoi(body_size);
@@ -267,6 +271,11 @@ int service(fsm* state)
     state->body = NULL;
     state->body_size = 0;
 
+    if(strftime(timestr, 200, "%a, %d %b %Y %H:%M:%S %Z" ,Date) == 0)
+    {
+      return 500;
+    }
+
     sprintf(response, "HTTP/1.1 200 OK\r\n");
     sprintf(response, "%sDate: %s\r\n", response,timestr);
     sprintf(response, "%sServer: Liso/1.0\r\n\r\n", response);
@@ -327,6 +336,16 @@ int mimetype(char* file, size_t len, char* type)
   }
 
   return 0;
+}
+
+int validsize(char* body_size)
+{
+  int size = atoi(body_size);
+
+  if(size < 0)
+    return 0;
+  else
+    return 1;
 }
 
 /*

@@ -4,4 +4,10 @@
 1. Maximum number of clients that can be handled at a time is
 restricted to FD_SETSIZE.
 
-2. The 'struct pool' is better off being on the heap as opposed to the stack to prevent stack overflows.
+2. Does not account for alphanumeric characters in the Content-Length header.
+
+3. No individual timeouts. If a client does not send the rest of the header, server hangs.
+
+4. Does not account for write short counts. Need to use writefds.
+
+5.

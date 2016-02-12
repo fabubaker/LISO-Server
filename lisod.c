@@ -25,6 +25,11 @@
 #include <unistd.h>
 #include <netdb.h>
 
+/* OpenSSL headers */
+#include <openssl/bio.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 #include "lisod.h"
 #include "logger.h"
 #include "engine.h"
@@ -34,9 +39,9 @@ FILE* logfile;   /* Legitimate use of globals, I swear! */
 
 /** Prototypes **/
 
-int close_socket(int sock);
-void init_pool(int listenfd, pool *p);
-void add_client(int client_fd, char* wwwfolder, pool *p);
+int  close_socket(int sock);
+void init_pool(int listenfd, int https_fd, pool *p);
+void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p);
 void check_clients(pool *p);
 void cleanup(int sig);
 
@@ -54,26 +59,64 @@ int main(int argc, char* argv[])
   }
 
   /* Ignore SIGPIPE */
-  signal(SIGPIPE, SIG_IGN);
   /* Handle SIGINT to cleanup after liso */
-  signal(SIGINT, cleanup);
+  signal(SIGPIPE, SIG_IGN);
+  signal(SIGINT,  cleanup);
 
   /* Parse cmdline args */
   short listen_port = atoi(argv[1]);
-  logfile = log_open(argv[3]);
-  char* wwwfolder = argv[5];
+  short https_port  = atoi(argv[2]);
+  logfile           = log_open(argv[3]);
+  //char* lockfile    = argv[4];
+  char* wwwfolder   = argv[5];
+  //char* cgipath     = argv[6];
+  char* privatekey  = argv[7];
+  char* certfile    = argv[8];
 
   /* Various buffers for read/write */
-  char log_buf[LOG_SIZE] = {0};
+  char log_buf[LOG_SIZE]  = {0};
   char hostname[LOG_SIZE] = {0};
-  char port[10] = {0};
+  char port[10]           = {0};
 
-  int listen_fd, client_fd;    // file descriptors.
-  socklen_t cli_size;
-  struct sockaddr_in serv_addr, cli_addr;
-  pool *pool = malloc(sizeof(struct pool));
-  struct timeval tv;
+  int                 listen_fd, https_fd, client_fd;
+  socklen_t           cli_size;
+  struct sockaddr_in  serv_addr, https_addr, cli_addr;
+  pool *pool =        malloc(sizeof(struct pool));
+  struct timeval      tv;
   tv.tv_sec = 5;
+
+  /* SSL variables */
+  SSL     *client_context;
+  SSL_CTX *ssl_context;
+
+  /********* BEGIN INIT *******/
+  SSL_library_init();
+  SSL_load_error_strings();
+
+  /* we want to use TLSv1 only */
+  if ((ssl_context = SSL_CTX_new(TLSv1_server_method())) == NULL)
+  {
+    fprintf(stderr, "Error creating SSL context.\n");
+    return EXIT_FAILURE;
+  }
+
+  /* register private key */
+  if (SSL_CTX_use_PrivateKey_file(ssl_context, privatekey,
+                                  SSL_FILETYPE_PEM) == 0)
+  {
+    SSL_CTX_free(ssl_context);
+    fprintf(stderr, "Error associating private key.\n");
+    return EXIT_FAILURE;
+  }
+
+  /* register public key (certificate) */
+  if (SSL_CTX_use_certificate_file(ssl_context, certfile,
+                                   SSL_FILETYPE_PEM) == 0)
+  {
+    SSL_CTX_free(ssl_context);
+    fprintf(stderr, "Error associating certificate.\n");
+        return EXIT_FAILURE;
+  }
 
   if(pool == NULL)
   {
@@ -87,20 +130,36 @@ int main(int argc, char* argv[])
   /* all networked programs must create a socket */
   if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
   {
+    SSL_CTX_free(ssl_context);
     log_error("Failed creating socket.",logfile);
     log_close(logfile);
     return EXIT_FAILURE;
   }
 
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_port = htons(listen_port);
-  serv_addr.sin_addr.s_addr = INADDR_ANY;
+  /* also create an HTTPS socket */
+  if ((https_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+  {
+    SSL_CTX_free(ssl_context);
+    log_error("Failed creating socket.\n", logfile);
+    return EXIT_FAILURE;
+  }
+
+  serv_addr.sin_family       = AF_INET;
+  serv_addr.sin_port         = htons(listen_port);
+  serv_addr.sin_addr.s_addr  = INADDR_ANY;
+
+  https_addr.sin_family       = AF_INET;
+  https_addr.sin_port         = htons(https_port);
+  https_addr.sin_addr.s_addr  = INADDR_ANY;
 
   /* Set sockopt so that ports can be resued */
   int enable = -1;
   if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
                  sizeof(int)) == -1)
   {
+    SSL_CTX_free(ssl_context);
+    close_socket(listen_fd);
+    close_socket(https_fd);
     log_error("setsockopt error! Aborting...", logfile);
     log_close(logfile);
     return EXIT_FAILURE;
@@ -115,6 +174,14 @@ int main(int argc, char* argv[])
     return EXIT_FAILURE;
   }
 
+  if (bind(https_fd, (struct sockaddr *) &https_addr, sizeof(https_addr)))
+  {
+    close_socket(https_fd);
+    SSL_CTX_free(ssl_context);
+    fprintf(stderr, "Failed binding socket.\n");
+    return EXIT_FAILURE;
+  }
+
   if (listen(listen_fd, 5))
   {
     close_socket(listen_fd);
@@ -123,8 +190,20 @@ int main(int argc, char* argv[])
     return EXIT_FAILURE;
   }
 
+  if (listen(https_fd, 5))
+  {
+    close_socket(https_fd);
+    SSL_CTX_free(ssl_context);
+    fprintf(stderr, "Error listening on socket.\n");
+    return EXIT_FAILURE;
+  }
+
   /* Initialize our pool of fds */
-  init_pool(listen_fd, pool);
+  init_pool(listen_fd, https_fd, pool);
+
+  /******** END INIT *********/
+
+  /******* BEGIN SERVER CODE ******/
 
   /* finally, loop waiting for input and then write it back */
   while (1)
@@ -144,7 +223,7 @@ int main(int argc, char* argv[])
       return EXIT_FAILURE;
     }
 
-    /* If the listening descriptor is ready, add the new client to the pool  */
+    /* Is the http port having clients ? */
     if (FD_ISSET(listen_fd, &pool->readfds))
     {
       cli_size = sizeof(cli_addr);
@@ -164,7 +243,59 @@ int main(int argc, char* argv[])
       sprintf(log_buf,
               "We have a new client: Say hi to %s:%s.", hostname, port);
       log_error(log_buf, logfile);
-      add_client(client_fd, wwwfolder,pool);
+      add_client(client_fd, wwwfolder, NULL, pool);
+    }
+
+    /* Is the https port having clients ? */
+    if (FD_ISSET(https_fd,  &pool->readfds))
+    {
+      cli_size = sizeof(cli_addr);
+      if ((client_fd = accept(https_fd, (struct sockaddr *) &cli_addr,
+                                &cli_size)) == -1)
+      {
+        close(https_fd);
+        SSL_CTX_free(ssl_context);
+        log_error("Error accepting connection.", logfile);
+        log_close(logfile);
+        return EXIT_FAILURE;
+      }
+
+      /************ WRAP SOCKET WITH SSL ************/
+      if ((client_context = SSL_new(ssl_context)) == NULL)
+      {
+        close(https_fd);
+        SSL_CTX_free(ssl_context);
+        fprintf(stderr, "Error creating client SSL context.\n");
+        return EXIT_FAILURE;
+      }
+
+      if (SSL_set_fd(client_context, client_fd) == 0)
+      {
+        close(https_fd);
+        SSL_free(client_context);
+        SSL_CTX_free(ssl_context);
+        fprintf(stderr, "Error creating client SSL context.\n");
+        return EXIT_FAILURE;
+      }
+
+      if (SSL_accept(client_context) <= 0)
+      {
+        close(https_fd);
+        SSL_free(client_context);
+        SSL_CTX_free(ssl_context);
+        fprintf(stderr, "Error accepting (handshake) client SSL context.\n");
+        return EXIT_FAILURE;
+      }
+      /************ END WRAP SOCKET WITH SSL ************/
+
+      /* Log client data */
+      getnameinfo((struct sockaddr *) &cli_addr, cli_size,
+                  hostname, LOG_SIZE, port, 10, 0);
+      memset(log_buf, 0, LOG_SIZE);
+      sprintf(log_buf,
+              "We have a new SSL client: Say hi to %s:%s.", hostname, port);
+      log_error(log_buf, logfile);
+      add_client(client_fd, wwwfolder, client_context, pool);
     }
 
     /* Read and respond to each client requests */
@@ -188,18 +319,19 @@ int close_socket(int sock)
  * @param listenfd The socket for listening for new connections.
  * @paran p        The pool struct to initialize.
  */
-void init_pool(int listenfd, pool *p)
+void init_pool(int listenfd, int https_fd, pool *p)
 {
   p->maxi = -1;
 
   memset(p->clientfd, -1, FD_SETSIZE*sizeof(int)); // No clients at the moment.
-  memset(p->data, 0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
-  memset(p->states, 0, FD_SETSIZE*sizeof(fsm*)); // NULL out the fsms.
+  memset(p->data,      0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
+  memset(p->states,    0, FD_SETSIZE*sizeof(fsm*)); // NULL out the fsms.
 
-  /* Initailly, listenfd is the only member of the read set */
-  p->maxfd = listenfd;
+  /* Initailly, listenfd and https_fd are the only members of the read set */
+  p->maxfd = https_fd;
   FD_ZERO(&p->masterfds);
   FD_SET(listenfd, &p->masterfds);
+  FD_SET(https_fd, &p->masterfds);
 }
 
 /*
@@ -208,7 +340,7 @@ void init_pool(int listenfd, pool *p)
  * @param client_fd The client file descriptor.
  * @param p         The pool struct to update.
  */
-void add_client(int client_fd, char* wwwfolder, pool *p)
+void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
 {
   int i; fsm* state;
 
@@ -218,20 +350,21 @@ void add_client(int client_fd, char* wwwfolder, pool *p)
   state = malloc(sizeof(struct state));
 
   /* Create initial values for fsm */
-  memset(state->request,0,BUF_SIZE);
+  memset(state->request, 0,BUF_SIZE);
   memset(state->response,0,BUF_SIZE);
-  state->method = NULL;
-  state->uri = NULL;
-  state->version = NULL;
-  state->header = NULL;
-  state->body = NULL;
-  state->body_size = -1; // No body as of yet
+  state->method     = NULL;
+  state->uri        = NULL;
+  state->version    = NULL;
+  state->header     = NULL;
+  state->body       = NULL;
+  state->body_size  = -1; // No body as of yet
 
-  state->end_idx = 0;
-  state->resp_idx = 0;
+  state->end_idx    = 0;
+  state->resp_idx   = 0;
 
-  state->www = wwwfolder;
-  state->conn = 1;
+  state->www            = wwwfolder;
+  state->conn           = 1;
+  state->client_context = client_context;
 
   for (i = 0; i < FD_SETSIZE; i++)  /* Find an available slot */
   {
@@ -301,25 +434,26 @@ void check_clients(pool *p)
       {
         store_request(buf, n, state);
 
+        do{
         /* First, parse method, URI and version. */
         if(state->method == NULL)
         {
           /* Malformed Request */
           if((error = parse_line(state)) != 0 && error != -1)
           {
-            client_error(state, error);
-            if (send(client_fd, state->response, state->resp_idx, 0)
-                != state->resp_idx)
-            {
-              rm_client(client_fd, p, "Unable to write to client", i);
-              continue;
-            }
+              client_error(state, error);
+              if (send(client_fd, state->response, state->resp_idx, 0)
+                  != state->resp_idx)
+              {
+                rm_client(client_fd, p, "Unable to write to client", i);
+                break;
+              }
             rm_client(client_fd, p, "HTTP error", i);
-            continue;
+            break;
           }
 
           /* Incomplete request, save and continue */
-          if(error == -1) continue;
+          if(error == -1) break;
         }
 
         /* Then, parse headers. */
@@ -333,10 +467,10 @@ void check_clients(pool *p)
                 state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
-              continue;
+              break;
             }
             rm_client(client_fd, p, "HTTP error", i);
-            continue;
+            break;
           }
         }
 
@@ -350,10 +484,10 @@ void check_clients(pool *p)
                 state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
-              continue;
+              break;
             }
             rm_client(client_fd, p, "HTTP error", i);
-            continue;
+            break;
           }
 
           if (send(client_fd, state->response, state->resp_idx, 0)
@@ -362,7 +496,7 @@ void check_clients(pool *p)
                != state->body_size)
           {
             rm_client(client_fd, p, "Unable to write to client", i);
-            continue;
+            break;
           }
 
           else
@@ -379,6 +513,8 @@ void check_clients(pool *p)
         state->end_idx = resetbuf(state->request, state->end_idx);
         clean_state(state);
         if(!state->conn) rm_client(client_fd, p, "Connection: close", i);
+        } while(error == 0);
+        continue;
       }
 
       /* Client sent EOF, close socket. */
@@ -415,29 +551,32 @@ void client_error(fsm* state, int error)
   switch (error)
   {
     case 404:
-      errnum = "404";
-      errormsg = "Not Found";
+      errnum    = "404";
+      errormsg  = "Not Found";
       break;
     case 411:
-      errnum = "411";
-      errormsg = "Length Required";
+      errnum    = "411";
+      errormsg  = "Length Required";
       break;
     case 500:
-      errnum = "500";
-      errormsg = "Internal Server Error";
+      errnum    = "500";
+      errormsg  = "Internal Server Error";
       break;
     case 501:
-      errnum = "501";
-      errormsg = "Not Implemented";
+      errnum    = "501";
+      errormsg  = "Not Implemented";
       break;
     case 503:
-      errnum = "503";
-      errormsg = "Service Unavailable";
+      errnum    = "503";
+      errormsg  = "Service Unavailable";
       break;
     case 505:
-      errnum = "505";
-      errormsg = "HTTP Version Not Supported";
+      errnum    = "505";
+      errormsg  = "HTTP Version Not Supported";
       break;
+    case 400:
+      errnum    = "400";
+      errormsg  = "Bad Request";
   }
 
   /* Build the HTTP response body */
@@ -450,7 +589,7 @@ void client_error(fsm* state, int error)
   sprintf(body, "%s%s: %s\r\n", body, errnum, errormsg);
   sprintf(body, "%s<hr><em>Fadhil's Web Server </em>\r\n", body);
 
-  sprintf(response,"%sConnection: close\r\n",response);
+  sprintf(response, "%sConnection: close\r\n",      response);
   sprintf(response, "%sContent-Length: %d\r\n\r\n", response,(int)strlen(body));
 
   sprintf(response, "%s%s", response, body);

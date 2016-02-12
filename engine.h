@@ -12,4 +12,5 @@ void *memmem(const void *haystack, size_t hlen,
 int resetbuf(char* buf, int end);
 void clean_state(fsm* state);
 int mimetype(char* file, size_t len, char* type);
+int validsize(char* body_size);
 #endif

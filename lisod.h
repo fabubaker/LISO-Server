@@ -2,6 +2,7 @@
 #define LISOD_H
 
 #include <sys/select.h>
+#include <openssl/ssl.h>
 
 #define BUF_SIZE 8192
 #define LOG_SIZE 1024
@@ -21,24 +22,30 @@ typedef struct state {
   int end_idx; // used to mark end of data in buffer
   int resp_idx; // used to mark end of response buffer
 
-  char* www; // The www folder
-  int conn;  // 1 = keep-alive; 0 = close
+  char* www;       // The www folder
+  int   conn;      // 1 = keep-alive; 0 = close
+  SSL*  client_context; // NULL, if HTTP, else valid ptr.
 
 } fsm;
 
 typedef struct pool {
   int maxfd;         /* Largest descriptor in the master set */
+
   fd_set masterfds;  /* Set containing all active descriptors */
   fd_set readfds;    /* Subset of descriptors ready for reading */
   fd_set writefds;   /* Subset of descriptors ready for writing */
+
   int nready;        /* Number of ready descriptors from select */
   int maxi;          /* Max index of clientfd array             */
+
   int clientfd[FD_SETSIZE];   /* Array of active client descriptors */
   fsm* states[FD_SETSIZE]; /* Array of states for each client */
   char data[FD_SETSIZE][BUF_SIZE];   /* Array that contains data from client */
+
 } pool;
 
 void rm_client(int client_fd, pool* p, char* logmsg, int i);
 void client_error(fsm* state, int error);
 void cleanup(int sig);
+
 #endif
