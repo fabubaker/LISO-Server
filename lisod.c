@@ -86,7 +86,7 @@ int main(int argc, char* argv[])
   tv.tv_sec = 5;
 
   /* SSL variables */
-  SSL     *client_context;
+  SSL     *client_context = NULL;
   SSL_CTX *ssl_context;
 
   /********* BEGIN INIT *******/
@@ -128,7 +128,8 @@ int main(int argc, char* argv[])
   fprintf(stdout, "-----Welcome to Liso!-----\n");
 
   /* all networked programs must create a socket */
-  if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1 || (https_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+  if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1 ||
+      (https_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
   {
     SSL_CTX_free(ssl_context);
     log_error("Failed creating socket.",logfile);
@@ -147,6 +148,8 @@ int main(int argc, char* argv[])
   /* Set sockopt so that ports can be resued */
   int enable = -1;
   if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
+                 sizeof(int)) == -1 ||
+      setsockopt(https_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
                  sizeof(int)) == -1)
   {
     SSL_CTX_free(ssl_context);
@@ -331,8 +334,8 @@ void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
   state = malloc(sizeof(struct state));
 
   /* Create initial values for fsm */
-  memset(state->request, 0,BUF_SIZE);
-  memset(state->response,0,BUF_SIZE);
+  memset(state->request,  0, BUF_SIZE);
+  memset(state->response, 0, BUF_SIZE);
   state->method     = NULL;
   state->uri        = NULL;
   state->version    = NULL;
@@ -346,6 +349,8 @@ void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
   state->www            = wwwfolder;
   state->conn           = 1;
   state->context = client_context;
+
+  memset(state->freebuf, 0, FREE_SIZE*sizeof(char*));
 
   for (i = 0; i < FD_SETSIZE; i++)  /* Find an available slot */
   {
@@ -444,7 +449,7 @@ void check_clients(pool *p)
           if((error = parse_headers(state)) != 0)
           {
             client_error(state, error);
-            if (send(client_fd, state->response, state->resp_idx, 0) !=
+            if (Send(client_fd, state->context, state->response, state->resp_idx) !=
                 state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
@@ -461,7 +466,7 @@ void check_clients(pool *p)
           if ((error = service(state)) != 0)
           {
             client_error(state, error);
-            if (send(client_fd, state->response, state->resp_idx, 0) !=
+            if (Send(client_fd, state->context, state->response, state->resp_idx) !=
                 state->resp_idx)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
@@ -471,9 +476,9 @@ void check_clients(pool *p)
             break;
           }
 
-          if (send(client_fd, state->response, state->resp_idx, 0)
+          if (Send(client_fd, state->context, state->response, state->resp_idx)
                != state->resp_idx ||
-              send(client_fd, state->body, state->body_size, 0)
+              Send(client_fd, state->context, state->body, state->body_size)
                != state->body_size)
           {
             rm_client(client_fd, p, "Unable to write to client", i);
@@ -494,7 +499,7 @@ void check_clients(pool *p)
         state->end_idx = resetbuf(state->request, state->end_idx);
         clean_state(state);
         if(!state->conn) rm_client(client_fd, p, "Connection: close", i);
-        } while(error == 0);
+        } while(error == 0 && state->conn);
         continue;
       }
 
@@ -515,6 +520,8 @@ void check_clients(pool *p)
 
 void rm_client(int client_fd, pool* p, char* logmsg, int i)
 {
+  fsm* state = p->states[i];
+  if(state->context != NULL) SSL_free(state->context);
   close_socket(client_fd);
   FD_CLR(client_fd, &p->masterfds);
   p->clientfd[i] = -1;

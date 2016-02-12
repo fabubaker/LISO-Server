@@ -14,8 +14,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
-
 #include "engine.h"
+
+#define FREE_SIZE 5
 
 /*
 @brief Parses a given buf based on state and populates
@@ -81,6 +82,7 @@ int parse_line(fsm* state)
   state->method = method;
   state->uri = uri;
   state->version = version;
+  addtofree(state->freebuf, tmpbuf, FREE_SIZE);
 
   return 0;
 }
@@ -106,7 +108,7 @@ int parse_headers(fsm* state)
 
   /* First extract Connection: */
 
-  tmpbuf = memmem(state->request, state->end_idx, "Connection: close\r\n",
+  tmpbuf = memmem(state->request, (int)(CRLF - state->request)+2, "Connection: close\r\n",
                   strlen("Connection: close\r\n"));
 
   if(tmpbuf == NULL)
@@ -151,6 +153,7 @@ int parse_headers(fsm* state)
   free(tmpbuf);
 
   state->header = (char*) 1; // For now
+  addtofree(state->freebuf, tmpbuf, FREE_SIZE);
   return 0;
 }
 
@@ -234,7 +237,7 @@ int service(fsm* state)
     {
       /* Open uri specified by client and save it in state*/
       file = fopen(path,"r");
-      state->body = malloc(meta.st_size);
+      state->body = malloc(meta.st_size); // free here brah
       state->body_size = meta.st_size;
       fread(state->body,1,state->body_size,file);
     }
@@ -269,7 +272,7 @@ int service(fsm* state)
     sprintf(response, "%sLast-Modified: %s\r\n\r\n", response, timestr);
     state->resp_idx = (int)strlen(response);
   }
-  else
+  else // We got a POST over here.
   {
     state->body = NULL;
     state->body_size = 0;
@@ -286,6 +289,7 @@ int service(fsm* state)
   }
 
   free(path);
+  addtofree(state->freebuf, state->body, FREE_SIZE);
   return 0;
 }
 
@@ -390,17 +394,14 @@ int resetbuf(char* buf, int end)
 void clean_state(fsm* state)
 {
   memset(state->response, 0, BUF_SIZE);
-  state->header = NULL;
 
-  if(state->method != NULL)
-    free(state->method);
+  delfromfree(state->freebuf, FREE_SIZE);
+
+  state->header = NULL;
 
   state->method = NULL;
   state->uri = NULL;
   state->version = NULL;
-
-  if(state->body != NULL)
-    free(state->body);
 
   state->body = NULL;
   state->body_size = 0;
@@ -442,6 +443,32 @@ int Send(int fd, SSL* client_context, char* buf, int num)
   }
 
   return SSL_write(client_context, buf, num);
+}
+
+void addtofree(char** freebuf, char* ptr, int bufsize)
+{
+  for (int i = 0; i < bufsize; i++)
+  {
+    if (freebuf[i] == NULL)
+    {
+      freebuf[i] = ptr;
+      return;
+    }
+  }
+
+  fprintf(stderr,"ADDTOFREE ERR");
+  exit(0);
+}
+
+void delfromfree(char** freebuf, int bufsize)
+{
+  for (int i = 0; i < bufsize; i++)
+  {
+    if (freebuf[i] != NULL)
+      free(freebuf[i]);
+    freebuf[i] = NULL;
+  }
+  return;
 }
 
 /**********************************************************/

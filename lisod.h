@@ -4,8 +4,9 @@
 #include <sys/select.h>
 #include <openssl/ssl.h>
 
-#define BUF_SIZE 8192
-#define LOG_SIZE 1024
+#define BUF_SIZE  8192
+#define LOG_SIZE  1024
+#define FREE_SIZE 5
 
 typedef struct state {
   char request[BUF_SIZE]; // arr of chars containing the text of the request.
@@ -24,7 +25,9 @@ typedef struct state {
 
   char* www;       // The www folder
   int   conn;      // 1 = keep-alive; 0 = close
-  SSL*  context; // NULL, if HTTP, else valid ptr.
+  SSL*  context;   // NULL, if HTTP, else valid ptr.
+
+  char* freebuf[FREE_SIZE];   // Hold ptrs to any buffer that needs freeing
 
 } fsm;
 
