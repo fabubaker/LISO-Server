@@ -13,4 +13,8 @@ int resetbuf(char* buf, int end);
 void clean_state(fsm* state);
 int mimetype(char* file, size_t len, char* type);
 int validsize(char* body_size);
+
+int Recv(int fd, SSL* client_context, char* buf, int num);
+int Send(int fd, SSL* client_context, char* buf, int num);
+
 #endif

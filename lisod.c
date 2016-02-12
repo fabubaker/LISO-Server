@@ -128,7 +128,7 @@ int main(int argc, char* argv[])
   fprintf(stdout, "-----Welcome to Liso!-----\n");
 
   /* all networked programs must create a socket */
-  if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+  if ((listen_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1 || (https_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
   {
     SSL_CTX_free(ssl_context);
     log_error("Failed creating socket.",logfile);
@@ -136,17 +136,9 @@ int main(int argc, char* argv[])
     return EXIT_FAILURE;
   }
 
-  /* also create an HTTPS socket */
-  if ((https_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
-  {
-    SSL_CTX_free(ssl_context);
-    log_error("Failed creating socket.\n", logfile);
-    return EXIT_FAILURE;
-  }
-
-  serv_addr.sin_family       = AF_INET;
-  serv_addr.sin_port         = htons(listen_port);
-  serv_addr.sin_addr.s_addr  = INADDR_ANY;
+  serv_addr.sin_family        = AF_INET;
+  serv_addr.sin_port          = htons(listen_port);
+  serv_addr.sin_addr.s_addr   = INADDR_ANY;
 
   https_addr.sin_family       = AF_INET;
   https_addr.sin_port         = htons(https_port);
@@ -166,35 +158,23 @@ int main(int argc, char* argv[])
   }
 
   /* servers bind sockets to ports---notify the OS they accept connections */
-  if (bind(listen_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)))
+  if (bind(listen_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) ||
+      bind(https_fd, (struct sockaddr *) &https_addr, sizeof(https_addr)))
   {
     close_socket(listen_fd);
+    close_socket(https_fd);
     log_error("Failed binding socket.", logfile);
     log_close(logfile);
     return EXIT_FAILURE;
   }
 
-  if (bind(https_fd, (struct sockaddr *) &https_addr, sizeof(https_addr)))
+  if (listen(https_fd, 5) || listen(listen_fd, 5))
   {
     close_socket(https_fd);
-    SSL_CTX_free(ssl_context);
-    fprintf(stderr, "Failed binding socket.\n");
-    return EXIT_FAILURE;
-  }
-
-  if (listen(listen_fd, 5))
-  {
     close_socket(listen_fd);
+    SSL_CTX_free(ssl_context);
     log_error("Error listening on socket.", logfile);
     log_close(logfile);
-    return EXIT_FAILURE;
-  }
-
-  if (listen(https_fd, 5))
-  {
-    close_socket(https_fd);
-    SSL_CTX_free(ssl_context);
-    fprintf(stderr, "Error listening on socket.\n");
     return EXIT_FAILURE;
   }
 
@@ -302,6 +282,7 @@ int main(int argc, char* argv[])
     check_clients(pool);
   }
 }
+
 int close_socket(int sock)
 {
   if (close(sock))
@@ -364,7 +345,7 @@ void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
 
   state->www            = wwwfolder;
   state->conn           = 1;
-  state->client_context = client_context;
+  state->context = client_context;
 
   for (i = 0; i < FD_SETSIZE; i++)  /* Find an available slot */
   {
@@ -427,7 +408,7 @@ void check_clients(pool *p)
       state = p->states[i];
 
       /* Recv bytes from the client */
-      n = recv(client_fd, buf, BUF_SIZE, 0);
+      n = Recv(client_fd, state->context, buf, BUF_SIZE);
 
       /* We have received bytes, send for parsing. */
       if (n >= 1)
@@ -442,7 +423,7 @@ void check_clients(pool *p)
           if((error = parse_line(state)) != 0 && error != -1)
           {
               client_error(state, error);
-              if (send(client_fd, state->response, state->resp_idx, 0)
+              if (Send(client_fd, state->context, state->response, state->resp_idx)
                   != state->resp_idx)
               {
                 rm_client(client_fd, p, "Unable to write to client", i);

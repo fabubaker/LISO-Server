@@ -24,7 +24,7 @@ typedef struct state {
 
   char* www;       // The www folder
   int   conn;      // 1 = keep-alive; 0 = close
-  SSL*  client_context; // NULL, if HTTP, else valid ptr.
+  SSL*  context; // NULL, if HTTP, else valid ptr.
 
 } fsm;
 

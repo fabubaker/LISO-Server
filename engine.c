@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+
 
 #include "engine.h"
 
@@ -403,6 +406,42 @@ void clean_state(fsm* state)
   state->body_size = 0;
 
   state->resp_idx = 0;
+}
+
+/*********************************************************/
+/* @brief wrapper for reading HTTP / HTTPS sockets       */
+/*                                                       */
+/* @param fd             File descriptor for HTTP socket */
+/* @param client_context SSL context                     */
+/* @param buf            buffer for reading into         */
+/* @param num            size of buffer                  */
+/*********************************************************/
+int Recv(int fd, SSL* client_context, char* buf, int num)
+{
+  if (client_context == NULL)
+  {
+    return recv(fd, buf, num, 0);
+  }
+
+  return SSL_read(client_context, buf, num);
+}
+
+/*********************************************************/
+/*@brief wrapper for writing to HTTP / HTTPS sockets     */
+/*                                                       */
+/* @param fd             File descriptor for HTTP socket */
+/* @param client_context SSL context                     */
+/* @param buf            buffer for reading into         */
+/* @param num            size of buffer                  */
+/*********************************************************/
+int Send(int fd, SSL* client_context, char* buf, int num)
+{
+  if(client_context == NULL)
+  {
+    return send(fd, buf, num, 0);
+  }
+
+  return SSL_write(client_context, buf, num);
 }
 
 /**********************************************************/
