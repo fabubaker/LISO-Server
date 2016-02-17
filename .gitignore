@@ -2,6 +2,7 @@ starter_code/*
 15-441-project-1/*
 www/*
 
+
 yolo
 logfile
 
@@ -9,11 +10,16 @@ logfile
 
 breakpts
 cp1_checker.py
+cgi_script.py
+cgi_script.py~
+flaskr/
+
 lisod
 15-441-project-1.tar
 handin.txt
 .gdbinit
 
+cgi_example.c
 daemonize.c
 grader.crt
 grader.key

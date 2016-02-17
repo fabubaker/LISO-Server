@@ -8,6 +8,8 @@ restricted to FD_SETSIZE.
 
 3. No individual timeouts. If a client does not send the rest of the header, server hangs.
 
-4. Does not account for write short counts. Need to use writefds.
+4. Does not account for write short counts.
 
-5.
+5. Bodies that have size over INT_MAX will crash the server.
+
+6. if CGI generated body exceeds 8192 bytes, server will reject request.

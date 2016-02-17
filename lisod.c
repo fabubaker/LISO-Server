@@ -1,7 +1,7 @@
 /*************************************************************/
 /* @file lisod.c                                             */
 /*                                                           */
-/* @brief A simple echo-server that uses select() to support */
+/* @brief A simple server that uses select() to support      */
 /* multiple concurrent clients.                              */
 /*                                                           */
 /* @author Fadhil Abubaker                                   */
@@ -12,6 +12,7 @@
 /* Part of the code is based on the select-based echo server found in
    CSAPP */
 
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <stdbool.h>
@@ -24,6 +25,9 @@
 #include <sys/select.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
 
 /* OpenSSL headers */
 #include <openssl/bio.h>
@@ -37,6 +41,11 @@
 /** Global vars **/
 FILE* logfile;   /* Legitimate use of globals, I swear! */
 
+char* wwwfolder;
+char* cgipath;
+short listen_port;
+short https_port;
+
 /** Prototypes **/
 
 int  close_socket(int sock);
@@ -44,6 +53,7 @@ void init_pool(int listenfd, int https_fd, pool *p);
 void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p);
 void check_clients(pool *p);
 void cleanup(int sig);
+void sigchld_handler(int sig);
 
 /** Definitions **/
 
@@ -60,23 +70,26 @@ int main(int argc, char* argv[])
 
   /* Ignore SIGPIPE */
   /* Handle SIGINT to cleanup after liso */
+  /* Install SIGCHLD handler to reap children */
   signal(SIGPIPE, SIG_IGN);
   signal(SIGINT,  cleanup);
+  signal(SIGCHLD, sigchld_handler);
 
   /* Parse cmdline args */
-  short listen_port = atoi(argv[1]);
-  short https_port  = atoi(argv[2]);
+  listen_port = atoi(argv[1]);
+  https_port  = atoi(argv[2]);
   logfile           = log_open(argv[3]);
   //char* lockfile    = argv[4];
-  char* wwwfolder   = argv[5];
-  //char* cgipath     = argv[6];
+  wwwfolder   = argv[5];
+  cgipath     = argv[6];
   char* privatekey  = argv[7];
   char* certfile    = argv[8];
 
   /* Various buffers for read/write */
-  char log_buf[LOG_SIZE]  = {0};
-  char hostname[LOG_SIZE] = {0};
-  char port[10]           = {0};
+  char log_buf[LOG_SIZE]            = {0};
+  char hostname[LOG_SIZE]           = {0};
+  char cli_ip[INET_ADDRSTRLEN]      = {0};
+  char port[10]                     = {0};
 
   int                 listen_fd, https_fd, client_fd;
   socklen_t           cli_size;
@@ -115,7 +128,7 @@ int main(int argc, char* argv[])
   {
     SSL_CTX_free(ssl_context);
     fprintf(stderr, "Error associating certificate.\n");
-        return EXIT_FAILURE;
+    return EXIT_FAILURE;
   }
 
   if(pool == NULL)
@@ -196,7 +209,7 @@ int main(int argc, char* argv[])
     pool->writefds = pool->masterfds;
 
     if((pool->nready = select(pool->maxfd+1, &pool->readfds, &pool->writefds,
-                             NULL, &tv)) == -1)
+                              NULL, &tv)) == -1)
     {
       close_socket(listen_fd);
       memset(log_buf, 0, LOG_SIZE);
@@ -211,7 +224,7 @@ int main(int argc, char* argv[])
     {
       cli_size = sizeof(cli_addr);
       if ((client_fd = accept(listen_fd, (struct sockaddr *) &cli_addr,
-                                &cli_size)) == -1)
+                              &cli_size)) == -1)
       {
         close(listen_fd);
         log_error("Error accepting connection.", logfile);
@@ -226,7 +239,10 @@ int main(int argc, char* argv[])
       sprintf(log_buf,
               "We have a new client: Say hi to %s:%s.", hostname, port);
       log_error(log_buf, logfile);
-      add_client(client_fd, wwwfolder, NULL, pool);
+
+      inet_ntop(AF_INET, &(cli_addr.sin_addr), cli_ip, INET_ADDRSTRLEN);
+
+      add_client(client_fd, cli_ip, NULL, pool);
     }
 
     /* Is the https port having clients ? */
@@ -234,7 +250,7 @@ int main(int argc, char* argv[])
     {
       cli_size = sizeof(cli_addr);
       if ((client_fd = accept(https_fd, (struct sockaddr *) &cli_addr,
-                                &cli_size)) == -1)
+                              &cli_size)) == -1)
       {
         close(https_fd);
         SSL_CTX_free(ssl_context);
@@ -308,7 +324,7 @@ void init_pool(int listenfd, int https_fd, pool *p)
   p->maxi = -1;
 
   memset(p->clientfd, -1, FD_SETSIZE*sizeof(int)); // No clients at the moment.
-  memset(p->data,      0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
+  //memset(p->data,      0, FD_SETSIZE*BUF_SIZE*sizeof(char)); // No data yet.
   memset(p->states,    0, FD_SETSIZE*sizeof(fsm*)); // NULL out the fsms.
 
   /* Initailly, listenfd and https_fd are the only members of the read set */
@@ -324,7 +340,7 @@ void init_pool(int listenfd, int https_fd, pool *p)
  * @param client_fd The client file descriptor.
  * @param p         The pool struct to update.
  */
-void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
+void add_client(int client_fd, char* cli_ip, SSL* client_context, pool *p)
 {
   int i; fsm* state;
 
@@ -349,6 +365,9 @@ void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
   state->www            = wwwfolder;
   state->conn           = 1;
   state->context = client_context;
+  strncpy(state->cli_ip, cli_ip, INET_ADDRSTRLEN);
+
+  state->pipefds    = -1;
 
   memset(state->freebuf, 0, FREE_SIZE*sizeof(char*));
 
@@ -383,19 +402,83 @@ void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p)
 }
 
 /*
- * @brief Iterates through active clients and reads requests.
- *
- * Uses select to determine whether clients are ready for reading or
- * writing, reads a request. Never blocks for a
- * single user.
- *
- * @param p The pool of clients to iterate through.
+  Makes a copy of the client's fsm struct.
  */
+int add_cgi(int client_fd, fsm* state, pool* p)
+{
+  int i; fsm* cgi;
+
+  /* Create a fsm for this cgi process */
+  cgi = malloc(sizeof(struct state));
+
+  /* Create initial values for fsm */
+  memset(cgi->request,  0, BUF_SIZE);
+  memset(cgi->response, 0, BUF_SIZE);
+  strncpy(cgi->response, state->response, state->resp_idx);
+
+  cgi->method     = NULL;
+  cgi->uri        = NULL;
+  cgi->version    = NULL;
+  cgi->header     = NULL;
+  cgi->body       = NULL;
+  cgi->body_size  = 0; // No body as of yet
+
+  cgi->end_idx    = 0;
+  cgi->resp_idx   = state->resp_idx;
+
+  cgi->www            = wwwfolder;
+  cgi->conn           = 1;
+  cgi->context        = state->context;
+  // Save the client fd to write cgi data back to..
+  cgi->pipefds        = state->pipefds;
+
+  memset(cgi->freebuf, 0, FREE_SIZE*sizeof(char*));
+
+  for (i = 0; i < FD_SETSIZE; i++)  /* Find an available slot */
+  {
+    if(p->clientfd[i] < 0) {   /* Found one free slot */
+      p->clientfd[i] = client_fd;
+
+      /* Add the descriptor to the master set */
+      FD_SET(state->pipefds, &p->masterfds);
+
+      /* Add fsm to pool */
+      p->states[i] = cgi;
+
+      /* Update max descriptor and max index */
+      if (state->pipefds > p->maxfd)
+        p->maxfd = state->pipefds;
+      if (i > p->maxi)
+        p->maxi = i;
+      break;
+    }
+  }
+
+  if (i == FD_SETSIZE)   /* There are no empty slots */
+  {
+    client_error(state, 500);
+    Send(client_fd, state->context, state->response, state->resp_idx);
+    free(cgi);
+    return -1;
+  }
+
+  state->pipefds = -1;
+  return 0;
+}
+
+/*********************************************************************/
+/* @brief Iterates through active clients and reads requests.        */
+/*                                                                   */
+/* Uses select to determine whether clients are ready for reading or */
+/* writing, reads a request. Never blocks for a                      */
+/* single user.                                                      */
+/*                                                                   */
+/* @param p The pool of clients to iterate through.                  */
+/*********************************************************************/
 void check_clients(pool *p)
 {
-  int i, client_fd, n, error;
+  int i, client_fd, cgi_fd, n, error;
   fsm* state;
-  //  int readbytes = 0;
   char buf[BUF_SIZE] = {0}; char log_buf[LOG_SIZE] = {0};
 
   memset(buf,0,BUF_SIZE);
@@ -404,9 +487,51 @@ void check_clients(pool *p)
   for(i = 0; (i <= p->maxi) && (p->nready > 0); i++)
   {
     client_fd = p->clientfd[i];
+    state     = p->states[i];
+    cgi_fd    = state->pipefds;
+
+    /* Check first for a CGI process to be read from, if any */
+    if (client_fd > 0 && state->pipefds > 0 &&
+        FD_ISSET(state->pipefds, &p->readfds))
+    {
+      cgi_fd = state->pipefds;
+      /* Check if cgi process is ready to be read */
+      if(cgi_fd > 0 && FD_ISSET(cgi_fd, &p->readfds))
+      {
+        /* receive bytes from the cgi process */
+        n = read(cgi_fd, buf, BUF_SIZE);
+
+        /* We received some bytes, store em*/
+        if(n >= 1)
+        {
+          store_request(buf, n, state);
+        }
+
+        /* CGI process performed orderly shutdown */
+        if(n == 0)
+        {
+          if(Send(client_fd, state->context, state->request, state->end_idx)
+             != state->end_idx)
+          {
+            rm_client(client_fd, p, "CGI process failed", i);
+          }
+          /* Done with CGI, remove cgifd from select */
+          rm_cgi(cgi_fd, p, "CGI iz dun", i);
+        }
+
+        /* Error reading from CGI process */
+        if(n == -1)
+        {
+          rm_client(client_fd, p, "CGI process failed", i);
+        }
+      }
+      continue;
+    }
+
+    if(state->pipefds > 0) continue; // This is a CGI fd, do not let it go below
 
     /* If a descriptor is ready to be read, read a line from it */
-    if ((client_fd > 0) && (FD_ISSET(client_fd, &p->readfds)))
+    if (client_fd > 0 && FD_ISSET(client_fd, &p->readfds))
     {
       p->nready--;
 
@@ -420,13 +545,14 @@ void check_clients(pool *p)
       {
         store_request(buf, n, state);
 
+        /* The loop that keeps servicing pipelined request */
         do{
-        /* First, parse method, URI and version. */
-        if(state->method == NULL)
-        {
-          /* Malformed Request */
-          if((error = parse_line(state)) != 0 && error != -1)
+          /* First, parse method, URI and version. */
+          if(state->method == NULL)
           {
+            /* Malformed Request */
+            if((error = parse_line(state)) != 0 && error != -1)
+            {
               client_error(state, error);
               if (Send(client_fd, state->context, state->response, state->resp_idx)
                   != state->resp_idx)
@@ -434,71 +560,98 @@ void check_clients(pool *p)
                 rm_client(client_fd, p, "Unable to write to client", i);
                 break;
               }
-            rm_client(client_fd, p, "HTTP error", i);
-            break;
+              rm_client(client_fd, p, "HTTP error", i);
+              break;
+            }
+
+            /* Incomplete request, save and continue to next client */
+            if(error == -1) break;
           }
 
-          /* Incomplete request, save and continue */
-          if(error == -1) break;
-        }
-
-        /* Then, parse headers. */
-        if(state->header == NULL && state->method != NULL)
-        {
-          /* Malformed Request */
-          if((error = parse_headers(state)) != 0)
+          /* Then, parse headers. */
+          if(state->header == NULL && state->method != NULL)
           {
-            client_error(state, error);
-            if (Send(client_fd, state->context, state->response, state->resp_idx) !=
-                state->resp_idx)
+            if((error = parse_headers(state)) != 0)
+            {
+              client_error(state, error);
+              if (Send(client_fd, state->context, state->response, state->resp_idx) !=
+                  state->resp_idx)
+              {
+                rm_client(client_fd, p, "Unable to write to client", i);
+                break;
+              }
+              rm_client(client_fd, p, "HTTP error", i);
+              break;
+            }
+          }
+
+          /* If POST, parse the body */
+          if(!strncmp(state->method, "POST", strlen("POST")) &&
+             state->body == NULL)
+          {
+            if((error = parse_body(state)) != 0)
+            {
+              client_error(state, error);
+              if (Send(client_fd, state->context, state->response, state->resp_idx) !=
+                  state->resp_idx)
+              {
+                rm_client(client_fd, p, "Unable to write to client", i);
+                break;
+              }
+              rm_client(client_fd, p, "HTTP error", i);
+              break;
+            }
+          }
+
+          /* If everything has been parsed, write to client */
+          if(state->method != NULL && state->header != NULL)
+          {
+            if ((error = service(state)) != 0)
+            {
+              client_error(state, error);
+              if (Send(client_fd, state->context, state->response, state->resp_idx) !=
+                  state->resp_idx)
+              {
+                rm_client(client_fd, p, "Unable to write to client", i);
+                break;
+              }
+              rm_client(client_fd, p, "HTTP error", i);
+              break;
+            }
+
+            /* if POST/GET CGI */
+            if(state->pipefds > 0)
+            {
+              if(add_cgi(client_fd, state, p))
+              {
+                rm_client(client_fd, p, "Too many processes", i);
+                break;
+              }
+            }
+            /* Regular GET/HEAD */
+            else if (Send(client_fd, state->context, state->response, state->resp_idx)
+                != state->resp_idx ||
+                Send(client_fd, state->context, state->body, state->body_size)
+                != state->body_size)
             {
               rm_client(client_fd, p, "Unable to write to client", i);
               break;
             }
-            rm_client(client_fd, p, "HTTP error", i);
-            break;
-          }
-        }
 
-        /* If everything has been parsed, write to client */
-        if(state->method != NULL && state->header != NULL)
-        {
-          if ((error = service(state)) != 0)
-          {
-            client_error(state, error);
-            if (Send(client_fd, state->context, state->response, state->resp_idx) !=
-                state->resp_idx)
+            else
             {
-              rm_client(client_fd, p, "Unable to write to client", i);
-              break;
+              memset(log_buf,0,LOG_SIZE);
+              sprintf(log_buf,"Sent %d bytes of data!",
+                      state->resp_idx+(int)state->body_size);
+              log_error(log_buf,logfile);
             }
-            rm_client(client_fd, p, "HTTP error", i);
-            break;
+            memset(buf,0,BUF_SIZE);
           }
 
-          if (Send(client_fd, state->context, state->response, state->resp_idx)
-               != state->resp_idx ||
-              Send(client_fd, state->context, state->body, state->body_size)
-               != state->body_size)
-          {
-            rm_client(client_fd, p, "Unable to write to client", i);
-            break;
-          }
-
-          else
-          {
-            memset(log_buf,0,LOG_SIZE);
-            sprintf(log_buf,"Sent %d bytes of data!",
-                    state->resp_idx+(int)state->body_size);
-            log_error(log_buf,logfile);
-          }
-          memset(buf,0,BUF_SIZE);
-        }
-
-        /* Finished serving one request, reset buffer */
-        state->end_idx = resetbuf(state->request, state->end_idx);
-        clean_state(state);
-        if(!state->conn) rm_client(client_fd, p, "Connection: close", i);
+          /* Finished serving one request, reset buffer */
+          state->end_idx = resetbuf(state);
+          clean_state(state);
+          if(!state->conn) rm_client(client_fd, p, "Connection: close", i);
         } while(error == 0 && state->conn);
         continue;
       }
@@ -514,14 +667,30 @@ void check_clients(pool *p)
       {
         rm_client(client_fd, p, "Error reading from client socket", i);
       }
-    } // End of read check
+    } // End of client read check
   } // End of client loop.
+}
+
+void rm_cgi(int cgi_fd, pool* p, char* logmsg, int i)
+{
+  fsm* state = p->states[i];
+  close(cgi_fd);
+  delfromfree(state->freebuf, FREE_SIZE);
+  free(state);
+
+  FD_CLR(cgi_fd, &p->masterfds);
+  p->clientfd[i] = -1;
+  log_error(logmsg, logfile);
 }
 
 void rm_client(int client_fd, pool* p, char* logmsg, int i)
 {
+  /* Sanitize memory */
   fsm* state = p->states[i];
   if(state->context != NULL) SSL_free(state->context);
+  delfromfree(state->freebuf, FREE_SIZE);
+  free(state);
+
   close_socket(client_fd);
   FD_CLR(client_fd, &p->masterfds);
   p->clientfd[i] = -1;
@@ -595,4 +764,20 @@ void cleanup(int sig)
 
   fprintf(stderr, "\nThank you for flying Liso. See ya!\n");
   exit(1);
+}
+
+void
+sigchld_handler(int sig)
+{
+  pid_t pid; int status;
+  int appease_compiler = 0;
+  appease_compiler += sig;
+
+  while((pid = waitpid(-1, &status, WNOHANG|WUNTRACED)) > 0)
+  {
+    /* Child terminated because of a
+     * signal that was not caught. */
+    fprintf(stderr, "Child reaped\n");
+  }
+  return;
 }

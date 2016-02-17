@@ -25,7 +25,7 @@ handin:
 	(make clean; cd ..; tar cvf fabubake.tar 15-441-project-1 --exclude cp1_checker.py --exclude starter_code --exclude www --exclude handin.txt --exclude yolo --exclude ".gdbinit" --exclude ".gitignore");
 
 test: lisod
-	./lisod 9999 9998 logfile lockfile www cgipath grader.key grader.crt
+	./lisod 9999 9998 logfile lockfile www ./flaskr/flaskr.py grader.key grader.crt
 
 echo_client:
 	$(CC) $(CFLAGS) echo_client.c -o echo_client
