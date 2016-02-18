@@ -27,6 +27,8 @@
 #include <netdb.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 
 /* OpenSSL headers */
@@ -54,6 +56,7 @@ void add_client(int client_fd, char* wwwfolder, SSL* client_context, pool *p);
 void check_clients(pool *p);
 void cleanup(int sig);
 void sigchld_handler(int sig);
+int daemonize(char* lock_file);
 
 /** Definitions **/
 
@@ -76,12 +79,12 @@ int main(int argc, char* argv[])
   signal(SIGCHLD, sigchld_handler);
 
   /* Parse cmdline args */
-  listen_port = atoi(argv[1]);
-  https_port  = atoi(argv[2]);
+  listen_port       = atoi(argv[1]);
+  https_port        = atoi(argv[2]);
   logfile           = log_open(argv[3]);
   //char* lockfile    = argv[4];
-  wwwfolder   = argv[5];
-  cgipath     = argv[6];
+  wwwfolder         = argv[5];
+  cgipath           = argv[6];
   char* privatekey  = argv[7];
   char* certfile    = argv[8];
 
@@ -101,6 +104,9 @@ int main(int argc, char* argv[])
   /* SSL variables */
   SSL     *client_context = NULL;
   SSL_CTX *ssl_context;
+
+  /*** Begin daemonizing ***/
+  //  daemonize(lockfile);
 
   /********* BEGIN INIT *******/
   SSL_library_init();
@@ -501,6 +507,8 @@ void check_clients(pool *p)
         /* receive bytes from the cgi process */
         n = read(cgi_fd, buf, BUF_SIZE);
 
+        fprintf(stderr,"%s", buf);
+
         /* We received some bytes, store em*/
         if(n >= 1)
         {
@@ -780,4 +788,39 @@ sigchld_handler(int sig)
     fprintf(stderr, "Child reaped\n");
   }
   return;
+}
+
+int daemonize(char* lock_file)
+{
+        /* drop to having init() as parent */
+        int i, lfp, pid = fork();
+        char str[256] = {0};
+        if (pid < 0) exit(EXIT_FAILURE);
+        if (pid > 0) exit(EXIT_SUCCESS);
+
+        setsid();
+
+        for (i = getdtablesize(); i>=0; i--)
+                close(i);
+
+        i = open("/dev/null", O_RDWR);
+        dup(i); /* stdout */
+        dup(i); /* stderr */
+        umask(027);
+
+        lfp = open(lock_file, O_RDWR|O_CREAT, 0640);
+
+        if (lfp < 0)
+                exit(EXIT_FAILURE); /* can not open */
+
+        if (lockf(lfp, F_TLOCK, 0) < 0)
+                exit(EXIT_SUCCESS); /* can not lock */
+
+        /* only first instance continues */
+        sprintf(str, "%d\n", getpid());
+        write(lfp, str, strlen(str)); /* record pid to lockfile */
+
+        // TODO: log --> "Successfully daemonized lisod process, pid %d."
+
+        return EXIT_SUCCESS;
 }

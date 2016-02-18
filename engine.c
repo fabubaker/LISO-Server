@@ -236,7 +236,7 @@ int service(fsm* state)
   struct stat meta;
   char timestr[200] = {0}; char type[40] = {0};
   char* response = state->response;
-  char* cgi = NULL;
+  char* cgi = NULL; char* query = NULL;
   FILE *file;
 
   int pathlength = strlen(state->uri) + strlen(state->www) + strlen("/") + 1;
@@ -251,12 +251,16 @@ int service(fsm* state)
   }
   else
   {
-    /* Check for cgi ? */
-    cgi = memmem(state->uri, strlen(state->uri), "?", strlen("?"));
+    /* Check for ? */
+    cgi = memmem(state->uri, strlen(state->uri), "/cgi/", strlen("/cgi/"));
+    query = memmem(state->uri, strlen(state->uri), "?", strlen("?"));
 
     if(cgi != NULL) // GET with cgi
     {
-      strncat(path, state->uri, (cgi - state->uri));
+      if(query != NULL)
+        strncat(path, state->uri, (query - state->uri));
+      else
+        strncat(path, state->uri, strlen(state->uri));
     }
     else
     { // Regular GET or HEAD
@@ -353,7 +357,7 @@ int service(fsm* state)
   }
   else // We got a POST over here.
   {
-    if(exec_cgi(state, path, 0))
+    if(exec_cgi(state, path, 1))
       return 500;
 
     /* state->body = NULL; */
@@ -598,15 +602,16 @@ int exec_cgi(fsm* state, char* filename, int flag)
      }
 
      close(stdin_pipe[1]); /* finished writing to spawn */
-
-     /* int readret; */
-     /* char buf[BUF_SIZE]; */
-     /* while((readret = read(stdout_pipe[0], buf, BUF_SIZE-1)) > 0) */
-     /* { */
-     /*   buf[readret] = '\0'; /\* nul-terminate string *\/ */
-     /*   fprintf(stdout, "Got from CGI: %s\n", buf); */
-     /* } */
-
+     int verbose = 0;
+     if(verbose) {
+     int readret;
+     char buf[BUF_SIZE];
+     while((readret = read(stdout_pipe[0], buf, BUF_SIZE-1)) > 0)
+     {
+       buf[readret] = '\0'; /* nul-terminate string */
+       fprintf(stdout, "Got from CGI: %s\n", buf);
+     }
+     }
    }
    /*************** END FORK **************/
 
@@ -629,11 +634,15 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
   if(cgi != NULL && strlen(cgi) == 1) // Is the '?' at the end of the URI?
     cgi = NULL;
 
-  if(flag) // POST
-    return;
+  if(flag)
+  {// POST
+    ENVP[0] = malloc(strlen("CONTENT_LENGTH=") + 20);
+    memset(ENVP[0], 0, strlen("CONTENT_LENGTH=") + 20);
+    snprintf(ENVP[0], strlen("CONTENT_LENGTH=") + 20, "CONTENT_LENGTH=%ld", state->body_size);
+  }
   else     // GET
   {
-    ENVP[0] = "CONTENT-LENGTH=";
+    ENVP[0] = "CONTENT_LENGTH=";
   }
 
   if(flag)
@@ -692,10 +701,11 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
   }
 
   /* SCRIPT_NAME */
-  ENVP[7] = malloc(strlen("SCRIPT_NAME=") + strlen(cgipath) + 1);
-  memset(ENVP[7], 0, strlen("SCRIPT_NAME=") + strlen(cgipath) + 1);
-  addtofree(state->freebuf,ENVP[7], FREE_SIZE);
-  sprintf(ENVP[7], "SCRIPT_NAME=%s", cgipath);
+  ENVP[7] = "SCRIPT_NAME=/cgi";
+  /* ENVP[7] = malloc(strlen("SCRIPT_NAME=") + strlen(cgipath) + 1); */
+  /* memset(ENVP[7], 0, strlen("SCRIPT_NAME=") + strlen(cgipath) + 1); */
+  /* addtofree(state->freebuf,ENVP[7], FREE_SIZE); */
+  /* sprintf(ENVP[7], "SCRIPT_NAME=%s", cgipath); */
 
   /* HOST_NAME */
   tmp = search_hdr(state, "Host: ", strlen("Host: "));
@@ -731,7 +741,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
 
   /* Server details */
   ENVP[10] = "SERVER_PROTOCOL=HTTP/1.1";
-  ENVP[11] = "SERVER_NAME=Liso/1.0";
+  ENVP[11] = "SERVER_NAME=Liso";
 
   /* HTTP_ACCEPT */
   tmp = search_hdr(state, "Accept: ", strlen("Accept: "));
@@ -779,7 +789,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
     }
   }
   else
-    ENVP[12] = "HTTP_REFERER=";
+    ENVP[13] = "HTTP_REFERER=";
 
   /* HTTP_ACCEPT_ENCODING */
   tmp = search_hdr(state, "Accept-Encoding: ", strlen("Accept-Encoding: "));
@@ -851,7 +861,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
     }
   }
   else
-    ENVP[16] = "HTTP_ACCEPT_CHARSET";
+    ENVP[16] = "HTTP_ACCEPT_CHARSET=";
 
   /* HTTP_COOKIE */
   tmp = search_hdr(state, "Cookie: ", strlen("Cookie: "));
@@ -938,10 +948,12 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
   memset(ENVP[22], 0, strlen("REQUEST_URI=") + strlen(filename) + 1);
   sprintf(ENVP[22], "REQUEST_URI=%s", filename);
 
-  /* PATH_INFO */
+  /* PATH_INFO (change) */
   ENVP[21] = malloc(strlen("PATH_INFO=") + strlen(filename) + 1);
   memset(ENVP[21], 0, strlen("PATH_INFO=") + strlen(filename) + 1);
-  sprintf(ENVP[21], "PATH_INFO=%s", filename);
+  sprintf(ENVP[21], "PATH_INFO=%s", filename+4);
+
+  ENVP[23] = "SERVER_SOFTWARE=Liso1.0";
 }
 
 

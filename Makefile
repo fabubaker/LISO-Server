@@ -19,14 +19,16 @@ logger: logger.h logger.c
 	$(CC) $(CFLAGS) logger.c -o logger.o
 
 engine: engine.h engine.c
-		$(CC) $(CFLAGS)  engine.c -o engine.o $(SSL)
+	$(CC) $(CFLAGS) engine.c -o engine.o $(SSL)
 
 handin:
-	(make clean; cd ..; tar cvf fabubake.tar 15-441-project-1 --exclude cp1_checker.py --exclude starter_code --exclude www --exclude handin.txt --exclude yolo --exclude ".gdbinit" --exclude ".gitignore");
+	(make clean; cd ..; tar cvf fabubake.tar 15-441-project-1 --exclude cp1_checker.py --exclude starter_code --exclude www --exclude flaskr --exclude handin.txt --exclude logfile --exclude ".gdbinit" --exclude ".gitignore" --exclude cgi_script.py --exclude cgi_example.c --exclude daemonize.c);
 
 test: lisod
-	./lisod 9999 9998 logfile lockfile www ./flaskr/flaskr.py grader.key grader.crt
+	./lisod 9999 9998 logfile lockfile ./flaskr/static ./flaskr/flaskr.py grader.key grader.crt
 
+test2: lisod
+	./lisod 9999 9998 logfile lockfile www cgi_script.py grader.key grader.crt
 echo_client:
 	$(CC) $(CFLAGS) echo_client.c -o echo_client
 

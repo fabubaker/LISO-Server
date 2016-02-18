@@ -19,7 +19,10 @@ lisod
 handin.txt
 .gdbinit
 
+lockfile
+
 cgi_example.c
 daemonize.c
+daemonize.h
 grader.crt
 grader.key
