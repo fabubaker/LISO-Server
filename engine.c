@@ -594,12 +594,15 @@ int exec_cgi(fsm* state, char* filename, int flag)
 
      if(!strncmp(state->method,"POST",strlen("POST")))
      {
-       if (write(stdin_pipe[1], state->body, strlen(state->body)) < 0)
+       if (write(stdin_pipe[1], state->body, state->body_size) < 0)
        {
          fprintf(stderr, "Error writing to spawned CGI program.\n");
          return -1;
        }
      }
+
+     fprintf(stderr,"Wrote successfully\n");
+     fprintf(stderr,"Wrote: %s\n", state->body);
 
      close(stdin_pipe[1]); /* finished writing to spawn */
      int verbose = 0;
@@ -660,7 +663,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[1], 0, strlen("CONTENT_TYPE=") + n + 1);
       addtofree(state->freebuf, ENVP[1], FREE_SIZE);
 
-      snprintf(ENVP[1], strlen("CONTENT_TYPE=") + n, "CONTENT_TYPE=%s", tmp);
+      snprintf(ENVP[1], strlen("CONTENT_TYPE=") + n + 1, "CONTENT_TYPE=%s", tmp);
     }
     else
       ENVP[1] = "CONTENT_TYPE=";
@@ -672,7 +675,12 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
 
   /* QUERY-STRING */
   if(cgi == NULL) // POST
-    ENVP[3] = "QUERY_STRING="; // Get from state->body
+  {
+    ENVP[3] = malloc(strlen("QUERY_STRING=") + state->body_size + 1);
+    memset(ENVP[3], 0, strlen("QUERY_STRING=") + state->body_size + 1);
+    addtofree(state->freebuf, ENVP[3], FREE_SIZE);
+    sprintf(ENVP[3], "QUERY_STRING=%s", state->body);
+  }
   else            // GET
   {
     ENVP[3] = malloc(strlen("QUERY_STRING=") + strlen(cgi+1) + 1);
@@ -702,10 +710,6 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
 
   /* SCRIPT_NAME */
   ENVP[7] = "SCRIPT_NAME=/cgi";
-  /* ENVP[7] = malloc(strlen("SCRIPT_NAME=") + strlen(cgipath) + 1); */
-  /* memset(ENVP[7], 0, strlen("SCRIPT_NAME=") + strlen(cgipath) + 1); */
-  /* addtofree(state->freebuf,ENVP[7], FREE_SIZE); */
-  /* sprintf(ENVP[7], "SCRIPT_NAME=%s", cgipath); */
 
   /* HOST_NAME */
   tmp = search_hdr(state, "Host: ", strlen("Host: "));
@@ -723,7 +727,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[8], 0, strlen("HOST_NAME=") + n + 1);
       addtofree(state->freebuf, ENVP[8], FREE_SIZE);
 
-      snprintf(ENVP[8], strlen("HOST_NAME=") + n, "HOST_NAME=%s", tmp);
+      snprintf(ENVP[8], strlen("HOST_NAME=") + n + 1, "HOST_NAME=%s", tmp);
     }
   }
   else
@@ -761,7 +765,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[12], 0, strlen("HTTP_ACCEPT=") + n + 1);
       addtofree(state->freebuf, ENVP[12], FREE_SIZE);
 
-      snprintf(ENVP[12], strlen("HTTP_ACCEPT=") + n, "HTTP_ACCEPT=%s", tmp);
+      snprintf(ENVP[12], strlen("HTTP_ACCEPT=") + n + 1, "HTTP_ACCEPT=%s", tmp);
     }
   }
   else
@@ -785,7 +789,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[13], 0, strlen("HTTP_REFERER=") + n + 1);
       addtofree(state->freebuf, ENVP[13], FREE_SIZE);
 
-      snprintf(ENVP[13], strlen("HTTP_REFERER=") + n, "HTTP_REFERER=%s", tmp);
+      snprintf(ENVP[13], strlen("HTTP_REFERER=") + n + 1, "HTTP_REFERER=%s", tmp);
     }
   }
   else
@@ -809,7 +813,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[14], 0, strlen("HTTP_ACCEPT_ENCODING=") + n + 1);
       addtofree(state->freebuf, ENVP[14], FREE_SIZE);
 
-      snprintf(ENVP[14], strlen("HTTP_ACCEPT_ENCODING=") + n, "HTTP_ACCEPT_ENCODING=%s", tmp);
+      snprintf(ENVP[14], strlen("HTTP_ACCEPT_ENCODING=") + n + 1, "HTTP_ACCEPT_ENCODING=%s", tmp);
     }
   }
   else
@@ -833,7 +837,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[15], 0, strlen("HTTP_ACCEPT_LANGUAGE=") + n + 1);
       addtofree(state->freebuf, ENVP[15], FREE_SIZE);
 
-      snprintf(ENVP[15], strlen("HTTP_ACCEPT_LANGUAGE=") + n, "HTTP_ACCEPT_LANGUAGE=%s", tmp);
+      snprintf(ENVP[15], strlen("HTTP_ACCEPT_LANGUAGE=") + n + 1, "HTTP_ACCEPT_LANGUAGE=%s", tmp);
     }
   }
   else
@@ -857,7 +861,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[16], 0, strlen("HTTP_ACCEPT_CHARSET=") + n + 1);
       addtofree(state->freebuf, ENVP[16], FREE_SIZE);
 
-      snprintf(ENVP[16], strlen("HTTP_ACCEPT_CHARSET=") + n, "HTTP_ACCEPT_CHARSET=%s", tmp);
+      snprintf(ENVP[16], strlen("HTTP_ACCEPT_CHARSET=") + n + 1, "HTTP_ACCEPT_CHARSET=%s", tmp);
     }
   }
   else
@@ -881,14 +885,14 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[17], 0, strlen("HTTP_COOKIE=") + n + 1);
       addtofree(state->freebuf, ENVP[17], FREE_SIZE);
 
-      snprintf(ENVP[17], strlen("HTTP_COOKIE=") + n, "HTTP_COOKIE=%s", tmp);
+      snprintf(ENVP[17], strlen("HTTP_COOKIE=") + n + 1, "HTTP_COOKIE=%s", tmp);
     }
   }
   else
     ENVP[17] = "HTTP_COOKIE=";
 
   /* HTTP_USER_AGENT */
-  tmp = search_hdr(state, "Accept: ", strlen("Accept: "));
+  tmp = search_hdr(state, "User-Agent: ", strlen("User-Agent: "));
 
   if(tmp != NULL)
   {
@@ -905,7 +909,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[18], 0, strlen("HTTP_USER_AGENT=") + n + 1);
       addtofree(state->freebuf, ENVP[18], FREE_SIZE);
 
-      snprintf(ENVP[18], strlen("HTTP_USER_AGENT=") + n, "HTTP_USER_AGENT=%s", tmp);
+      snprintf(ENVP[18], strlen("HTTP_USER_AGENT=") + n + 1, "HTTP_USER_AGENT=%s", tmp);
     }
   }
   else
@@ -935,7 +939,7 @@ void genenv(char** ENVP, fsm* state, char* filename, int flag)
       memset(ENVP[20], 0, strlen("HTTP_HOST=") + n + 1);
       addtofree(state->freebuf, ENVP[20], FREE_SIZE);
 
-      snprintf(ENVP[20], strlen("HTTP_HOST=") + n, "HTTP_HOST=%s", tmp);
+      snprintf(ENVP[20], strlen("HTTP_HOST=") + n + 1, "HTTP_HOST=%s", tmp);
     }
   }
   else

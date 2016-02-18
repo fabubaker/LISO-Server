@@ -24,8 +24,8 @@ engine: engine.h engine.c
 handin:
 	(make clean; cd ..; tar cvf fabubake.tar 15-441-project-1 --exclude cp1_checker.py --exclude starter_code --exclude www --exclude flaskr --exclude handin.txt --exclude logfile --exclude ".gdbinit" --exclude ".gitignore" --exclude cgi_script.py --exclude cgi_example.c --exclude daemonize.c);
 
-test: lisod
-	./lisod 9999 9998 logfile lockfile ./flaskr/static ./flaskr/flaskr.py grader.key grader.crt
+test1: lisod
+	./lisod 9999 9998 logfile lockfile www ./flaskr/flaskr.py grader.key grader.crt
 
 test2: lisod
 	./lisod 9999 9998 logfile lockfile www cgi_script.py grader.key grader.crt

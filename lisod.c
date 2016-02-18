@@ -106,7 +106,7 @@ int main(int argc, char* argv[])
   SSL_CTX *ssl_context;
 
   /*** Begin daemonizing ***/
-  //  daemonize(lockfile);
+  //daemonize(lockfile);
 
   /********* BEGIN INIT *******/
   SSL_library_init();
@@ -492,7 +492,8 @@ void check_clients(pool *p)
   /* Iterate through all clients, and read their data */
   for(i = 0; (i <= p->maxi) && (p->nready > 0); i++)
   {
-    client_fd = p->clientfd[i];
+    if((client_fd = p->clientfd[i]) <= 0)
+      continue;
     state     = p->states[i];
     cgi_fd    = state->pipefds;
 
@@ -597,7 +598,7 @@ void check_clients(pool *p)
           if(!strncmp(state->method, "POST", strlen("POST")) &&
              state->body == NULL)
           {
-            if((error = parse_body(state)) != 0)
+            if((error = parse_body(state)) != 0 && error != -1)
             {
               client_error(state, error);
               if (Send(client_fd, state->context, state->response, state->resp_idx) !=
@@ -609,6 +610,9 @@ void check_clients(pool *p)
               rm_client(client_fd, p, "HTTP error", i);
               break;
             }
+
+            /* Incomplete request, save and continue to next client */
+            if(error == -1) break;
           }
 
           /* If everything has been parsed, write to client */
@@ -682,10 +686,10 @@ void check_clients(pool *p)
 void rm_cgi(int cgi_fd, pool* p, char* logmsg, int i)
 {
   fsm* state = p->states[i];
-  close(cgi_fd);
   delfromfree(state->freebuf, FREE_SIZE);
   free(state);
 
+  close(cgi_fd);
   FD_CLR(cgi_fd, &p->masterfds);
   p->clientfd[i] = -1;
   log_error(logmsg, logfile);
