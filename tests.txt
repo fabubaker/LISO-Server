@@ -2,4 +2,4 @@
 @author Fadhil Abubaker
 
 Debugging lisod turned to be fairly easy with the sockets in python. A
-few changes were made to the given python checker, such as printing data sent and received, printing number of bytes sent and received and changing the pool of random characters to a more print-friendly set.
+few changes were made to the given python checker, such as printing data sent and received, number of bytes sent and received and changing the pool of random characters to a more screen-friendly set.

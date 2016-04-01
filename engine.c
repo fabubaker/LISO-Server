@@ -24,19 +24,20 @@ extern short listen_port;
 extern short https_port;
 extern char* cgipath;
 
-/*
-@brief Parses a given buf based on state and populates
-a struct with parsed tokens if successful. If request
-is incomplete, stash it as its state.
 
-@param state The saved state of the client
-
-@retval  0    if successful
-@retval -1    if incomplete request
-@retval 400   if malformed
-@retval 500   if internal error
-@retval 505   if wrong version
-*/
+/**********************************************************/
+/* @brief Parses a given buf based on state and populates */
+/* a struct with parsed tokens if successful. If request  */
+/* is incomplete, stash it as its state.                  */
+/*                                                        */
+/* @param state The saved state of the client             */
+/*                                                        */
+/* @retval  0    if successful                            */
+/* @retval -1    if incomplete request                    */
+/* @retval 400   if malformed                             */
+/* @retval 500   if internal error                        */
+/* @retval 505   if wrong version                         */
+/**********************************************************/
 int parse_line(fsm* state)
 {
   char* CRLF; char* tmpbuf;
@@ -93,15 +94,16 @@ int parse_line(fsm* state)
   return 0;
 }
 
-/*
-  Currently parses only Content-Length for POST.
 
-  @retval  0  Success
-  @retval 411  No CL header (411)
-  @retval 400  malformed request (400)
-  @retval 500  internal error (500)
-
- */
+/*******************************************************************/
+/* @brief   Parses headers from the request passed on by the state */
+/* and populates the state accordingly                             */
+/*                                                                 */
+/* @retval  0   Success                                            */
+/* @retval 411  No CL header (411)                                 */
+/* @retval 400  malformed request (400)                            */
+/* @retval 500  internal error (500)                               */
+/*******************************************************************/
 int parse_headers(fsm* state)
 {
   char* CRLF; char* tmpbuf; char* body_size;
@@ -173,16 +175,16 @@ int parse_headers(fsm* state)
   return 0;
 }
 
-/*
-  @brief parses the body and stores it in state.
-  If the full body has not been read yet, stash
-  whatever has been received.
 
-  @retval  0    if successful
-  @retval -1    if incomplete body
-  @retval 400   if malformed
-
-*/
+/**************************************************/
+/* @brief parses the body and stores it in state. */
+/* If the full body has not been read yet, stash  */
+/* whatever has been received.                    */
+/*                                                */
+/* @retval  0    if successful                    */
+/* @retval -1    if incomplete body               */
+/* @retval 400   if malformed                     */
+/**************************************************/
 int parse_body(fsm* state)
 {
   char* CRLF; char* body;
@@ -224,11 +226,15 @@ int store_request(char* buf, int size, fsm* state)
   return 0;
 }
 
-/*
-  @retval  0  success
-  @retval 500 internal server error
-  @retval 404 File not found
- */
+/*********************************************************************/
+/* @brief    Services requests obtained from the state of a client.  */
+/* Services GET, HEAD and POST requests and populates the state with */
+/* appropriate data.                                                 */
+/*                                                                   */
+/* @retval  0  success                                               */
+/* @retval 500 internal server error                                 */
+/* @retval 404 File not found                                        */
+/*********************************************************************/
 int service(fsm* state)
 {
   struct tm *Date; time_t t;
@@ -318,6 +324,7 @@ int service(fsm* state)
         state->body_size = meta.st_size;
         fread(state->body,1,state->body_size,file);
         fclose(file);
+        addtofree(state->freebuf, state->body, FREE_SIZE);
       }
     }
     else // HEAD
@@ -359,35 +366,23 @@ int service(fsm* state)
   {
     if(exec_cgi(state, path, 1))
       return 500;
-
-    /* state->body = NULL; */
-    /* state->body_size = 0; */
-    /* sprintf(response, "HTTP/1.1 200 OK\r\n"); */
-    /* sprintf(response, "%sDate: %s\r\n", response,timestr); */
-    /* sprintf(response, "%sServer: Liso/1.0\r\n\r\n", response); */
-
-    /* if(!state->conn) */
-    /*   sprintf(response, "%sConnection: close\r\n", response); */
-    /* else */
-    /*   sprintf(response, "%sConnection: keep-alive\r\n", response); */
-
-    /* if(mimetype(state->uri, strlen(state->uri), type)) */
-    /*   sprintf(response, "%sContent-Type: %s\r\n", response, type); */
-
     state->resp_idx = (int)strlen(response);
   }
 
   free(path);
-  addtofree(state->freebuf, state->body, FREE_SIZE);
   return 0;
 }
 
-/*
- *
- * @retval 0 if unrecognizable
- * @retval 1 if successful
- *
- */
+/*****************************************************************************/
+/* @brief  populates the variable type with appropriate filetype information */
+/*                                                                           */
+/* @param file  The file to check for                                        */
+/* @param len   length of 'type'                                             */
+/* @param type  buffer to populate data                                      */
+/*                                                                           */
+/* @retval 0 if unrecognizable                                               */
+/* @retval 1 if successful                                                   */
+/*****************************************************************************/
 int mimetype(char* file, size_t len, char* type)
 {
   char* ext; size_t extlen; char* cgi;
@@ -452,10 +447,13 @@ int validsize(char* body_size)
     return 1;
 }
 
-/*
- *
- * @returns length of new end
- */
+
+/*****************************************************************/
+/* @brief   resetbuf resizes the buffer of a state using pointer */
+/* arithmetic so that lisod can handle pipelined requests.       */
+/*                                                               */
+/* @returns length of newly resized buffer                       */
+/*****************************************************************/
 int resetbuf(fsm* state)
 {
   char* CRLF; char* next; char* buf = state->request;
@@ -502,9 +500,10 @@ int resetbuf(fsm* state)
   return strlen(buf);
 }
 
-/*
-  @brief Cleans up state after serving one request
- */
+
+/****************************************************/
+/* @brief Cleans up state after serving one request */
+/****************************************************/
 void clean_state(fsm* state)
 {
   memset(state->response, 0, BUF_SIZE);

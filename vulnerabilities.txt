@@ -13,3 +13,9 @@ restricted to FD_SETSIZE.
 5. Bodies that have size over INT_MAX will crash the server.
 
 6. if CGI generated body exceeds 8192 bytes, server will reject request.
+
+7. Server crashes with a SEGFAULT when attempting to serve specific POST messages.
+
+8. A particular corner case with pipelining causes the server to crash when servicing extremely large requests.
+
+9. Built on a very tight deadline by a very sleepy person. May be prone to other bugs. Maybe lots.

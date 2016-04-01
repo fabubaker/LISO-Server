@@ -1,17 +1,25 @@
-/*************************************************************/
-/* @file lisod.c                                             */
-/*                                                           */
-/* @brief A simple server that uses select() to support      */
-/* multiple concurrent clients.                              */
-/*                                                           */
-/* @author Fadhil Abubaker                                   */
-/*                                                           */
-/* @usage: ./lisod <port>                                    */
-/*************************************************************/
+/********************************************************************************/
+/* @file lisod.c                                                                */
+/*                                                                              */
+/* @brief A simple web server that uses select() to handle                      */
+/* multiple concurrent clients.                                                 */
+/*                                                                              */
+/* Supports SSL/TLS, CGI, GET, HEAD and POST requests.                          */
+/*                                                                              */
+/* @author Fadhil Abubaker                                                      */
+/*                                                                              */
+/* @usage: ./lisod <HTTP port> <HTTPS port> <log file> <lock file> <www folder> */
+/* <CGI script path> <privatekey file> <certificate file>                       */
+/********************************************************************************/
+
 
 /* Part of the code is based on the select-based echo server found in
    CSAPP */
 
+
+/* YOLO M8s */
+
+#include <mcheck.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -59,6 +67,7 @@ void sigchld_handler(int sig);
 int daemonize(char* lock_file);
 
 /** Definitions **/
+void no_op(enum mcheck_status status) {status = status;}
 
 int main(int argc, char* argv[])
 {
@@ -70,6 +79,8 @@ int main(int argc, char* argv[])
     fprintf(stderr, "<privatekey file> <certificate file> \n");
     return EXIT_FAILURE;
   }
+
+  mcheck(&no_op);
 
   /* Ignore SIGPIPE */
   /* Handle SIGINT to cleanup after liso */
@@ -106,7 +117,7 @@ int main(int argc, char* argv[])
   SSL_CTX *ssl_context;
 
   /*** Begin daemonizing ***/
-  //daemonize(lockfile);
+  // daemonize(lockfile);
 
   /********* BEGIN INIT *******/
   SSL_library_init();
@@ -683,6 +694,15 @@ void check_clients(pool *p)
   } // End of client loop.
 }
 
+/********************************************************************/
+/* @brief Removes a CGI socket from the pool of states and clients, */
+/*   freeing up resources and cleaning up memory.                   */
+/*                                                                  */
+/* @param cgi_fd  The CGI fd to be removed from the pool            */
+/* @param p       The pool from which cgi_fd is to be removed       */
+/* @param logmsg  message to write to logfile                       */
+/* @param i       The index into the pool                           */
+/********************************************************************/
 void rm_cgi(int cgi_fd, pool* p, char* logmsg, int i)
 {
   fsm* state = p->states[i];
@@ -695,6 +715,16 @@ void rm_cgi(int cgi_fd, pool* p, char* logmsg, int i)
   log_error(logmsg, logfile);
 }
 
+
+/***************************************************************************/
+/* @brief Removes a client and its state from the maintained pool, freeing */
+/* up resources and cleaning up memory                                     */
+/*                                                                         */
+/* @param client_fd  The client fd to be removed from the pool             */
+/* @param p          The pool from which to be removed                     */
+/* @param logmsg     A msg to write to the logfile                         */
+/* @param i          The index into the pool                               */
+/***************************************************************************/
 void rm_client(int client_fd, pool* p, char* logmsg, int i)
 {
   /* Sanitize memory */
@@ -709,6 +739,13 @@ void rm_client(int client_fd, pool* p, char* logmsg, int i)
   log_error(logmsg, logfile);
 }
 
+
+/************************************************************/
+/* @brief  Writes an error message into the state provided. */
+/*                                                          */
+/* @param state  The state to write to                      */
+/* @param error  The error to write to                      */
+/************************************************************/
 void client_error(fsm* state, int error)
 {
   char* response = state->response;
